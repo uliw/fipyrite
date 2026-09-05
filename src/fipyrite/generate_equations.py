@@ -57,6 +57,14 @@ except ImportError:
     except ImportError:
         species = {}
 
+KNOWN_MONOD_LIMITERS = {
+    "O2_implicit": {"species": "O2", "K_expr": "mp.K_O2 / mp.phi"},
+    "O2_implicit_TS2": {"species": "O2", "K_expr": "mp.K_O2_TS2"},
+    "SO4_implicit": {"species": "SO4", "K_expr": "mp.K_SO4 / mp.phi"},
+    "Fe3_implicit": {"species": "Fe3", "K_expr": "mp.K_Fe3 / (1.0 - mp.phi)"},
+    "Fe3_diss_red_implicit": {"species": "Fe3", "K_expr": "mp.K_Fe3_diss_red / (1.0 - mp.phi)"},
+}
+
 def verify_stoichiometry(reaction: str) -> bool:
     """Verify stoichiometry of the reaction string. Currently a stub."""
     # TODO: Implement full chemical element balancing checks using chempy
@@ -73,6 +81,8 @@ def create_reaction(
     limiters: list = None,
     master_species: str = None,
     ref_species: str = None,
+    monod_scheme: str = "picard",
+    monod_limiter: dict = None,
 ):
     """
     Generate the Python function code for a reaction using ChemPy parser.
@@ -247,6 +257,41 @@ def create_reaction(
             expr = f"({multiplier}) * {expr}"
         return expr
 
+    def find_monod_limiter(r):
+        if monod_limiter and monod_limiter.get("species") == r:
+            return monod_limiter.get("limiter_name"), monod_limiter.get("K_expr")
+        if limiters:
+            for lim_name in limiters:
+                if lim_name in KNOWN_MONOD_LIMITERS and KNOWN_MONOD_LIMITERS[lim_name]["species"] == r:
+                    return lim_name, KNOWN_MONOD_LIMITERS[lim_name]["K_expr"]
+        return None, None
+
+    def make_rmax_expr(r, skip_limiter=None, multiplier=None):
+        lookup_key = "HS" if r == "TS2" and "HS" in conc_terms_map else r
+        terms = ["k_val"]
+        for k_sp, v_expr in conc_terms_map.items():
+            if k_sp == lookup_key:
+                if r == "POC":
+                    terms.append("1.0")
+                elif r == "TS2":
+                    if v_expr == "HS" and dynamic_variables and "HS" in dynamic_variables:
+                        expr = dynamic_variables["HS"]
+                        terms.append(expr.replace("c.TS2", "1.0"))
+                    else:
+                        terms.append(v_expr.replace("c.TS2", "1.0"))
+                else:
+                    terms.append(v_expr.replace(f"c.{r}", "1.0"))
+            else:
+                terms.append(v_expr)
+        if limiters:
+            for lim_name in limiters:
+                if lim_name != skip_limiter:
+                    terms.append(f"lim['{lim_name}']")
+        expr = " * ".join(terms)
+        if multiplier:
+            expr = f"({multiplier}) * {expr}"
+        return expr
+
     # Build base rate expression
     rate_base_terms = ["k_val"] + list(conc_terms_map.values())
     if limiters:
@@ -322,8 +367,23 @@ def create_reaction(
                         code += "    add_implicit_sink(LHS, RATES, poc_species, coeff_POC, rate_base, mp=mp, has_solid=has_solid, c=c)\n"
                     elif r in species and species[r]["include"]:
                         multiplier = f"({coeff_expr}) / {ref_stoich}"
-                        code += f"    coeff_{r} = {make_coeff_expr(r, multiplier=multiplier)}\n"
-                        code += f"    add_implicit_sink(LHS, RATES, '{r}', coeff_{r}, ({multiplier}) * rate_base, mp=mp, has_solid=has_solid, c=c)\n"
+                        monod_lim_name, k_m_expr = find_monod_limiter(r)
+                        if monod_scheme != "picard" and monod_lim_name:
+                            code += f"    R_max_{r} = {make_rmax_expr(r, skip_limiter=monod_lim_name, multiplier=multiplier)}\n"
+                            code += f"    add_monod_sink(\n"
+                            code += f"        LHS=LHS, RHS=RHS, RATES=RATES,\n"
+                            code += f"        species='{r}',\n"
+                            code += f"        conc=c.{r},\n"
+                            code += f"        K_m={k_m_expr},\n"
+                            code += f"        R_max=R_max_{r},\n"
+                            code += f"        mp=mp,\n"
+                            code += f"        has_solid=has_solid,\n"
+                            code += f"        scheme=getattr(mp, 'monod_scheme', '{monod_scheme}'),\n"
+                            code += f"        c=c,\n"
+                            code += f"    )\n"
+                        else:
+                            code += f"    coeff_{r} = {make_coeff_expr(r, multiplier=multiplier)}\n"
+                            code += f"    add_implicit_sink(LHS, RATES, '{r}', coeff_{r}, ({multiplier}) * rate_base, mp=mp, has_solid=has_solid, c=c)\n"
     else:
         # No tracked products, just add implicit sinks for all tracked reactants
         for r, coeff in reactants.items():
@@ -333,8 +393,23 @@ def create_reaction(
                 code += "    add_implicit_sink(LHS, RATES, poc_species, coeff_POC, rate_base, mp=mp, has_solid=has_solid, c=c)\n"
             elif r in species and species[r]["include"]:
                 multiplier = f"({coeff_expr}) / {ref_stoich}"
-                code += f"    coeff_{r} = {make_coeff_expr(r, multiplier=multiplier)}\n"
-                code += f"    add_implicit_sink(LHS, RATES, '{r}', coeff_{r}, ({multiplier}) * rate_base, mp=mp, has_solid=has_solid, c=c)\n"
+                monod_lim_name, k_m_expr = find_monod_limiter(r)
+                if monod_scheme != "picard" and monod_lim_name:
+                    code += f"    R_max_{r} = {make_rmax_expr(r, skip_limiter=monod_lim_name, multiplier=multiplier)}\n"
+                    code += f"    add_monod_sink(\n"
+                    code += f"        LHS=LHS, RHS=RHS, RATES=RATES,\n"
+                    code += f"        species='{r}',\n"
+                    code += f"        conc=c.{r},\n"
+                    code += f"        K_m={k_m_expr},\n"
+                    code += f"        R_max=R_max_{r},\n"
+                    code += f"        mp=mp,\n"
+                    code += f"        has_solid=has_solid,\n"
+                    code += f"        scheme=getattr(mp, 'monod_scheme', '{monod_scheme}'),\n"
+                    code += f"        c=c,\n"
+                    code += f"    )\n"
+                else:
+                    code += f"    coeff_{r} = {make_coeff_expr(r, multiplier=multiplier)}\n"
+                    code += f"    add_implicit_sink(LHS, RATES, '{r}', coeff_{r}, ({multiplier}) * rate_base, mp=mp, has_solid=has_solid, c=c)\n"
 
     # Isotope generation
     has_sulfur = any(s in species and "S" in species[s]["formula"] for s in all_parsed_species)
@@ -456,6 +531,13 @@ def main():
         default="generated_equations.py",
         help="Path to save the generated Python reactions code. Defaults to generated_equations.py in the current working directory."
     )
+    parser.add_argument(
+        "--monod-scheme",
+        type=str,
+        choices=["picard", "hybrid", "newton"],
+        default="picard",
+        help="Linearization scheme for Monod terms: 'picard' (legacy secant), 'hybrid' (safeguarded Newton), or 'newton' (full Newton-Raphson). Defaults to 'picard'."
+    )
     
     # Print help text and exit if called without any arguments
     if len(sys.argv) == 1:
@@ -479,10 +561,16 @@ def main():
         sys.exit(1)
 
     generated_code = "# Auto-generated reaction functions\n\n"
-    generated_code += "from fipyrite.diff_lib import add_coupled_reaction, add_implicit_sink, calculate_fractionated_coeff_32, partition_equilibrium_isotope_32\n\n"
+    if args.monod_scheme == "picard":
+        generated_code += "from fipyrite.diff_lib import add_coupled_reaction, add_implicit_sink, calculate_fractionated_coeff_32, partition_equilibrium_isotope_32\n\n"
+    else:
+        generated_code += "from fipyrite.diff_lib import add_coupled_reaction, add_implicit_sink, add_monod_sink, calculate_fractionated_coeff_32, partition_equilibrium_isotope_32\n\n"
 
     for cfg in configs:
-        code = create_reaction(**cfg)
+        cfg_copy = dict(cfg)
+        if "monod_scheme" not in cfg_copy:
+            cfg_copy["monod_scheme"] = args.monod_scheme
+        code = create_reaction(**cfg_copy)
         generated_code += code + "\n\n"
 
     output_path = Path(args.output)
