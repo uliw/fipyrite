@@ -1,7 +1,6 @@
 # Auto-generated reaction functions
 
-from fipy.tools import numerix as nx
-from fipyrite.diff_lib import add_coupled_reaction, add_implicit_sink, calculate_fractionated_coeff_32, partition_equilibrium_isotope_32
+from fipyrite.diff_lib import add_coupled_reaction, add_implicit_sink, add_monod_sink, calculate_fractionated_coeff_32, partition_equilibrium_isotope_32
 
 def aerobic_respiration(c, k, lim, LHS, RHS, RATES, CROSS, mp):
     has_solid = True
@@ -9,8 +8,18 @@ def aerobic_respiration(c, k, lim, LHS, RHS, RATES, CROSS, mp):
     poc_k_name = k.get('poc_k', 'POC_fast')
     k_val = mp.k.get(poc_k_name) if hasattr(mp, 'k') else k.get(poc_k_name, 0.0)
     rate_base = k_val * c.O2 * getattr(c, poc_species) * lim['O2_implicit']
-    coeff_O2 = ((1) / 1.0) * k_val * 1.0 * getattr(c, poc_species) * lim['O2_implicit']
-    add_implicit_sink(LHS, RATES, 'O2', coeff_O2, ((1) / 1.0) * rate_base, mp=mp, has_solid=has_solid, c=c)
+    R_max_O2 = ((1) / 1.0) * k_val * 1.0 * getattr(c, poc_species)
+    add_monod_sink(
+        LHS=LHS, RHS=RHS, RATES=RATES,
+        species='O2',
+        conc=c.O2,
+        K_m=mp.K_O2 / mp.phi,
+        R_max=R_max_O2,
+        mp=mp,
+        has_solid=has_solid,
+        scheme=getattr(mp, 'monod_scheme', 'hybrid'),
+        c=c,
+    )
     coeff_POC = k_val * c.O2 * 1.0 * lim['O2_implicit']
     add_implicit_sink(LHS, RATES, poc_species, coeff_POC, rate_base, mp=mp, has_solid=has_solid, c=c)
 
@@ -93,18 +102,9 @@ def hs_oxidation(c, k, lim, LHS, RHS, RATES, CROSS, mp):
     has_solid = False
     HS = c.TS2 * mp.hs_frac
     k_val = mp.k.get('TS2_O2') if hasattr(mp, 'k') else k.get('TS2_O2', 0.0)
-
-    # Smooth Sigmoidal / Tanh switches for O2 and TS2
-    # Km chosen so that tanh(C / Km) >= 0.995 (>= 99.5% full rate) when C >= 0.5e-3 mmol/L
-    Km_O2 = 0.5e-3 / 3.0
-    Km_TS2 = 0.5e-3 / 3.0
-    lim_O2 = nx.tanh(c.O2 / Km_O2)
-    lim_TS2 = nx.tanh(c.TS2 / Km_TS2)
-    lim_dual = lim_O2 * lim_TS2
-
-    rate_base = k_val * HS * c.O2 * lim_dual
+    rate_base = k_val * HS * c.O2
     rate_master = rate_base
-    coeff_master = k_val * 1.0 * mp.hs_frac * c.O2 * lim_dual
+    coeff_master = k_val * 1.0 * mp.hs_frac * c.O2
     add_coupled_reaction(
         CROSS=CROSS,
         LHS=LHS,
@@ -120,7 +120,7 @@ def hs_oxidation(c, k, lim, LHS, RHS, RATES, CROSS, mp):
         ref_species='TS2',
         stoich_ref=2.0,
     )
-    coeff_O2 = ((1) / 2.0) * k_val * HS * 1.0 * lim_dual
+    coeff_O2 = ((1) / 2.0) * k_val * HS * 1.0
     add_implicit_sink(LHS, RATES, 'O2', coeff_O2, ((1) / 2.0) * rate_base, mp=mp, has_solid=has_solid, c=c)
     if mp.isotopes:
         alpha = 1.0 + (mp.TS2_O2_alpha - 1.0) * lim['TS2_alpha_explicit']
@@ -169,8 +169,18 @@ def hs_oxidation_velde(c, k, lim, LHS, RHS, RATES, CROSS, mp):
         ref_species='TS2',
         stoich_ref=1.0,
     )
-    coeff_O2 = ((2) / 1.0) * k_val * HS * 1.0 * lim['O2_implicit_TS2']
-    add_implicit_sink(LHS, RATES, 'O2', coeff_O2, ((2) / 1.0) * rate_base, mp=mp, has_solid=has_solid, c=c)
+    R_max_O2 = ((2) / 1.0) * k_val * HS * 1.0
+    add_monod_sink(
+        LHS=LHS, RHS=RHS, RATES=RATES,
+        species='O2',
+        conc=c.O2,
+        K_m=mp.K_O2_TS2,
+        R_max=R_max_O2,
+        mp=mp,
+        has_solid=has_solid,
+        scheme=getattr(mp, 'monod_scheme', 'hybrid'),
+        c=c,
+    )
     if mp.isotopes:
         alpha = 1.0 + (mp.TS2_O2_alpha - 1.0) * lim['TS2_alpha_explicit']
         hs_32 = partition_equilibrium_isotope_32(
