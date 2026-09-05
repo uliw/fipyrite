@@ -1151,6 +1151,83 @@ def add_explicit_source(
         RATES[key] += getattr(scaled_rate, "value", scaled_rate)
 
 
+def add_monod_sink(
+    LHS,
+    RHS,
+    RATES,
+    species: str,
+    conc: Any,
+    K_m: Any,
+    R_max: Any,
+    mp: Any,
+    has_solid: bool,
+    scheme: str = "hybrid",
+    c: Any = None,
+    reaction: str | None = None,
+    multiplier: float = 1.0,
+):
+    """Add a Monod consumption term: R = multiplier * R_max * C / (C + K_m).
+
+    Supports three linearization schemes:
+    - 'picard': Secant Picard linearization (unconditional positivity, matches legacy).
+    - 'newton': Tangent Newton-Raphson linearization (quadratic convergence).
+    - 'hybrid': Safeguarded Newton: Newton for C > K_m (zero-order regime),
+                smoothly reverting to Picard for C <= K_m (near-zero first-order regime).
+    """
+    phi = mp.phi
+    fac = (1.0 - phi) if has_solid else phi
+
+    # Extract concentration values if CellVariable or ArrayProxy
+    C_val = getattr(conc, "value", conc)
+    C_val = np.maximum(C_val, 1e-30)
+
+    # Scale R_max by stoichiometric multiplier if provided
+    R_max_eff = R_max * multiplier if multiplier != 1.0 else R_max
+
+    denom = C_val + K_m
+    monod_frac = C_val / denom
+    physical_rate = R_max_eff * monod_frac
+    bulk_rate = physical_rate * fac
+
+    scheme_lower = scheme.lower() if isinstance(scheme, str) else "hybrid"
+
+    if scheme_lower == "picard":
+        coeff = R_max_eff / denom
+        LHS[species] = LHS[species] - coeff * fac
+        RATES[species] -= bulk_rate
+    elif scheme_lower == "newton":
+        J = R_max_eff * (K_m / (denom * denom))
+        R_rem = -R_max_eff * (monod_frac * monod_frac)
+        scaled_rem = R_rem * fac
+
+        LHS[species] = LHS[species] - J * fac
+        RHS[species] = RHS[species] + scaled_rem
+        RATES[species] -= bulk_rate
+    elif scheme_lower == "hybrid":
+        # Newton where C > K_m, Picard where C <= K_m
+        is_newton = np.where(C_val > K_m, 1.0, 0.0)
+        is_picard = 1.0 - is_newton
+
+        J = R_max_eff * (K_m / (denom * denom))
+        R_rem = -R_max_eff * (monod_frac * monod_frac)
+        coeff_picard = R_max_eff / denom
+
+        coeff_eff = is_newton * J + is_picard * coeff_picard
+        rem_eff = is_newton * R_rem * fac
+
+        LHS[species] = LHS[species] - coeff_eff * fac
+        RHS[species] = RHS[species] + rem_eff
+        RATES[species] -= bulk_rate
+    else:
+        raise ValueError(f"Unknown Monod scheme '{scheme}'. Choose from 'picard', 'newton', or 'hybrid'.")
+
+    if reaction is not None:
+        key = f"r_{reaction}_{species}"
+        if key not in RATES:
+            RATES[key] = np.zeros_like(bulk_rate)
+        RATES[key] -= bulk_rate
+
+
 def smooth_ramp(x, eps=0.02):
     """C1 continuous smooth ramp function:
     Approximates max(x, 0) with continuous value and continuous first derivative:
