@@ -291,3 +291,219 @@ def test_legacy_mode_when_inner_sweeping_disabled(mock_save_state, mock_save_dat
     assert sweep_call_count == 3
 
 
+@patch("fipyrite.solver_calls._setup_static_coupled_equation")
+@patch("fipyrite.solver_calls._update_static_coefficients")
+@patch("fipyrite.solver_calls.save_data")
+@patch("fipyrite.solver_calls.save_state")
+def test_early_bailout_stagnant_residual(mock_save_state, mock_save_data, mock_update_coeffs, mock_setup_eq, solver_setup):
+    """Test that inner sweeping bails out at early_bailout_iter (5) instead of burning all max_inner_sweeps (15)."""
+    mp, c, k, mesh, D_mol, bc_map, z = solver_setup
+    mp.max_steps = 1
+    mp.max_inner_sweeps = 15
+    mp.inner_tol = 1e-3
+    mp.dt_init = 20.0
+    mp.enable_early_bailout = True
+    mp.early_bailout_iter = 5
+    mp.early_bailout_err = 3.0
+
+    mock_coupled_eq = MagicMock()
+    mock_setup_eq.return_value = (mock_coupled_eq, {}, {}, {})
+    mock_update_coeffs.return_value = {"FeS": np.zeros(3), "TS2": np.zeros(3)}
+
+    attempt = 0
+    sweep_count_attempt1 = 0
+    sweep_dts = []
+
+    def sweep_side_effect(dt, solver):
+        nonlocal attempt, sweep_count_attempt1
+        sweep_dts.append(dt)
+        if dt > 10.0:
+            # Attempt 1: Keep residual stagnant and high (~5.0)
+            sweep_count_attempt1 += 1
+            # Change by 0.005 each sweep -> scaled error ~ 5.0 / 1e-3
+            c["TS2"].setValue(c["TS2"].value + 0.005)
+        else:
+            # Attempt 2: Converge immediately
+            c["TS2"].setValue(c["TS2"].old.value)
+        return 0.0
+
+    mock_coupled_eq.sweep.side_effect = sweep_side_effect
+
+    step, rms = run_non_steady_state_solver_coupled(
+        mp, c, ["FeS", "TS2"], ["FeS", "TS2"], k, MagicMock(), MagicMock(), mesh, D_mol, bc_map, z
+    )
+
+    assert step == 1
+    # Attempt 1 must have bailed out at sweep 5 instead of continuing to 15!
+    assert sweep_count_attempt1 == 5
+    # Retry dt should have been cut aggressively (20.0 * 0.25 = 5.0)
+    assert sweep_dts[5] == pytest.approx(5.0)
+
+
+@patch("fipyrite.solver_calls._setup_static_coupled_equation")
+@patch("fipyrite.solver_calls._update_static_coefficients")
+@patch("fipyrite.solver_calls.save_data")
+@patch("fipyrite.solver_calls.save_state")
+def test_early_bailout_diverging_residual(mock_save_state, mock_save_data, mock_update_coeffs, mock_setup_eq, solver_setup):
+    """Test that inner sweeping bails out early when residual grows/diverges."""
+    mp, c, k, mesh, D_mol, bc_map, z = solver_setup
+    mp.max_steps = 1
+    mp.max_inner_sweeps = 15
+    mp.inner_tol = 1e-3
+    mp.dt_init = 20.0
+    mp.enable_early_bailout = True
+    mp.early_bailout_iter = 5
+
+    mock_coupled_eq = MagicMock()
+    mock_setup_eq.return_value = (mock_coupled_eq, {}, {}, {})
+    mock_update_coeffs.return_value = {"FeS": np.zeros(3), "TS2": np.zeros(3)}
+
+    sweep_count_attempt1 = 0
+
+    def sweep_side_effect(dt, solver):
+        nonlocal sweep_count_attempt1
+        if dt > 10.0:
+            sweep_count_attempt1 += 1
+            # Error grows exponentially: 0.002, 0.004, 0.008, 0.016, 0.032
+            c["TS2"].setValue(c["TS2"].value + 0.002 * (2 ** sweep_count_attempt1))
+        else:
+            c["TS2"].setValue(c["TS2"].old.value)
+        return 0.0
+
+    mock_coupled_eq.sweep.side_effect = sweep_side_effect
+
+    step, rms = run_non_steady_state_solver_coupled(
+        mp, c, ["FeS", "TS2"], ["FeS", "TS2"], k, MagicMock(), MagicMock(), mesh, D_mol, bc_map, z
+    )
+
+    assert step == 1
+    # Bailed out at sweep 5 due to divergence
+    assert sweep_count_attempt1 == 5
+
+
+@patch("fipyrite.solver_calls._setup_static_coupled_equation")
+@patch("fipyrite.solver_calls._update_static_coefficients")
+@patch("fipyrite.solver_calls.save_data")
+@patch("fipyrite.solver_calls.save_state")
+def test_aggressive_vs_standard_cut(mock_save_state, mock_save_data, mock_update_coeffs, mock_setup_eq, solver_setup):
+    """Test that residual > 3.0 triggers 0.25x cut while residual < 3.0 uses standard 0.5x cut."""
+    mp, c, k, mesh, D_mol, bc_map, z = solver_setup
+    mp.max_steps = 1
+    mp.max_inner_sweeps = 3
+    mp.dt_init = 20.0
+    mp.enable_early_bailout = False  # disable early bailout so max_inner_sweeps dictates end
+    mp.enable_aggressive_cut = True
+    mp.aggressive_cut_threshold = 3.0
+    mp.aggressive_cut_factor = 0.25
+    mp.dt_cut_factor = 0.5
+    mp.inner_tol = 1e-3
+
+    mock_coupled_eq = MagicMock()
+    mock_setup_eq.return_value = (mock_coupled_eq, {}, {}, {})
+    mock_update_coeffs.return_value = {"FeS": np.zeros(3), "TS2": np.zeros(3)}
+
+    # Test 1: residual is small (~1.5) on failure -> standard cut 0.5x -> dt = 10.0
+    sweep_dts = []
+    def sweep_side_effect_mild(dt, solver):
+        sweep_dts.append(dt)
+        if dt > 15.0:
+            # Change relative to previous iterate is 0.0015 -> scaled error ~1.5 (< 3.0)
+            c["TS2"].setValue(c["TS2"].value + 0.0015)
+        else:
+            c["TS2"].setValue(c["TS2"].old.value)
+        return 0.0
+
+    mock_coupled_eq.sweep.side_effect = sweep_side_effect_mild
+
+    step, rms = run_non_steady_state_solver_coupled(
+        mp, c, ["FeS", "TS2"], ["FeS", "TS2"], k, MagicMock(), MagicMock(), mesh, D_mol, bc_map, z
+    )
+
+    assert step == 1
+    # 3 sweeps at 20.0, then retry at 10.0 (0.5x)
+    assert sweep_dts[0] == 20.0
+    assert sweep_dts[1] == 20.0
+    assert sweep_dts[2] == 20.0
+    assert sweep_dts[3] == pytest.approx(10.0)
+
+
+@patch("fipyrite.solver_calls._setup_static_coupled_equation")
+@patch("fipyrite.solver_calls._update_static_coefficients")
+@patch("fipyrite.solver_calls.save_data")
+@patch("fipyrite.solver_calls.save_state")
+def test_aggressive_cut_on_high_residual(mock_save_state, mock_save_data, mock_update_coeffs, mock_setup_eq, solver_setup):
+    """Test that residual > 3.0 triggers aggressive 0.25x cut."""
+    mp, c, k, mesh, D_mol, bc_map, z = solver_setup
+    mp.max_steps = 1
+    mp.max_inner_sweeps = 3
+    mp.dt_init = 20.0
+    mp.enable_early_bailout = False
+    mp.enable_aggressive_cut = True
+    mp.aggressive_cut_threshold = 3.0
+    mp.aggressive_cut_factor = 0.25
+    mp.dt_cut_factor = 0.5
+    mp.inner_tol = 1e-3
+
+    mock_coupled_eq = MagicMock()
+    mock_setup_eq.return_value = (mock_coupled_eq, {}, {}, {})
+    mock_update_coeffs.return_value = {"FeS": np.zeros(3), "TS2": np.zeros(3)}
+
+    sweep_dts = []
+    def sweep_side_effect_high(dt, solver):
+        sweep_dts.append(dt)
+        if dt > 10.0:
+            # Change relative to previous iterate is 0.005 -> scaled error ~5.0 (> 3.0)
+            c["TS2"].setValue(c["TS2"].value + 0.005)
+        else:
+            c["TS2"].setValue(c["TS2"].old.value)
+        return 0.0
+
+    mock_coupled_eq.sweep.side_effect = sweep_side_effect_high
+
+    step, rms = run_non_steady_state_solver_coupled(
+        mp, c, ["FeS", "TS2"], ["FeS", "TS2"], k, MagicMock(), MagicMock(), mesh, D_mol, bc_map, z
+    )
+
+    assert step == 1
+    # 3 sweeps at 20.0, then aggressive retry at 5.0 (0.25x)
+    assert sweep_dts[0] == 20.0
+    assert sweep_dts[1] == 20.0
+    assert sweep_dts[2] == 20.0
+    assert sweep_dts[3] == pytest.approx(5.0)
+
+
+@patch("fipyrite.solver_calls._setup_static_coupled_equation")
+@patch("fipyrite.solver_calls._update_static_coefficients")
+@patch("fipyrite.solver_calls.save_data")
+@patch("fipyrite.solver_calls.save_state")
+def test_near_convergence_acceptance(mock_save_state, mock_save_data, mock_update_coeffs, mock_setup_eq, solver_setup):
+    """Test that a step within near_convergence_tol (e.g. 1.25) at max_inner_sweeps is accepted."""
+    mp, c, k, mesh, D_mol, bc_map, z = solver_setup
+    mp.max_steps = 1
+    mp.max_inner_sweeps = 3
+    mp.enable_early_bailout = False
+    mp.inner_tol = 1e-3
+    mp.near_convergence_tol = 1.25
+    mp.dt_init = 10.0
+
+    mock_coupled_eq = MagicMock()
+    mock_setup_eq.return_value = (mock_coupled_eq, {}, {}, {})
+    mock_update_coeffs.return_value = {"FeS": np.zeros(3), "TS2": np.zeros(3)}
+
+    sweep_count = 0
+    def sweep_near_conv(dt, solver):
+        nonlocal sweep_count
+        sweep_count += 1
+        # Change by 1.1e-3 -> scaled error = 1.1e-3 / 1e-3 = 1.10 (between 1.00 and 1.25)
+        c["TS2"].setValue(c["TS2"].value + 1.1e-3)
+        return 0.0
+
+    mock_coupled_eq.sweep.side_effect = sweep_near_conv
+
+    step, rms = run_non_steady_state_solver_coupled(
+        mp, c, ["FeS", "TS2"], ["FeS", "TS2"], k, MagicMock(), MagicMock(), mesh, D_mol, bc_map, z
+    )
+
+    # Must succeed in 1 step without retries/failures because near_convergence_tol accepted it!
+    assert step == 1
+    assert sweep_count == 3

@@ -69,6 +69,9 @@ class MockMP:
         self.hs_frac = 0.9
         self.h2s_frac = 0.1
         self.isotopes = True
+        self.K_O2 = 0.001 * 0.8
+        self.K_O2_TS2 = 0.001
+        self.monod_scheme = "picard"
         self.k = data_container({
             "POC_fast": 1.2e-9,
             "POC_slow": 1.2e-10,

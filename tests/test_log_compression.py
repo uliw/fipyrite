@@ -1,6 +1,7 @@
 import gzip
 import os
 import tempfile
+import time
 import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch
@@ -99,3 +100,62 @@ def test_solver_compresses_log_on_completion(mock_save_state, mock_save_data, mo
         with gzip.open(gz_path, "rt") as f:
             lines = f.readlines()
             assert any("Final Report:" in line for line in lines)
+            assert any("total sweeps" in line for line in lines)
+
+
+@patch("fipyrite.solver_calls.save_data_async")
+def test_report_step_status_enhanced_logging(mock_save_async):
+    """Test that _report_step_status includes wall time, pace, sim speed, and sweeps."""
+    from fipyrite.solver_calls import _report_step_status
+
+    logged = []
+    def mock_log(msg):
+        logged.append(msg)
+
+    class DummyMP:
+        phi = 0.8
+        report_step = 10
+        isotopes = False
+        title = None
+        k = data_container()
+
+    mesh = Grid1D(nx=3)
+    c = data_container({
+        "Fe2_total": CellVariable(mesh=mesh, value=1.0),
+        "Fe3": CellVariable(mesh=mesh, value=1.0),
+        "FeS": CellVariable(mesh=mesh, value=1.0),
+        "FeS2": CellVariable(mesh=mesh, value=1.0),
+    })
+
+    z = np.array([0.0, 1.0, 2.0, 3.0])
+
+    _report_step_status(
+        step=10,
+        total_time=86400.0 * 10,
+        current_dt=3600.0,
+        rms_change=1e-3,
+        mp=DummyMP(),
+        c=c,
+        z=z,
+        species_list_full=[],
+        D_mol=None,
+        diagenetic_reactions=None,
+        equilibrium_reactions=None,
+        plot_queue=None,
+        _log=mock_log,
+        sweeps=4,
+        total_sweeps=42,
+        start_wall=time.time() - 120.0,
+        last_report_wall=time.time() - 5.0,
+        last_report_time=86400.0 * 5,
+    )
+
+    assert len(logged) == 1
+    line = logged[0]
+    # Check for wall timestamp, pace, sim speed, sweeps, and total sweeps
+    assert "Step   10" in line
+    assert "s/step" in line
+    assert "d/min" in line or "yr/min" in line
+    assert "sweeps: 4" in line
+    assert "tot: 42" in line
+
