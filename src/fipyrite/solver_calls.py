@@ -75,6 +75,7 @@ class AdaptiveDT:
     failure_ceiling_factor: float = 0.7
     failure_hold_steps: int = 10
     ceiling_growth_factor: float = 1.05
+    aggressive_cut_factor: float = 0.25
 
     _dt: float = 0.0
     _err_prev: float | None = None  # Delay initialization
@@ -96,12 +97,14 @@ class AdaptiveDT:
         """Return current time step."""
         return self._dt
 
-    def register_failure(self, failed_dt: float) -> float:
+    def register_failure(self, failed_dt: float, cut_factor: float | None = None) -> float:
         """Record step failure and set a temporary ceiling."""
-        self._dt = max(failed_dt * self.cut_factor, self.dt_min)
+        factor = self.cut_factor if cut_factor is None else cut_factor
+        self._dt = max(failed_dt * factor, self.dt_min)
         if self.enable_failure_ceiling:
             self._failed_dt = failed_dt
-            self._dt_ceiling = max(self.dt_min, failed_dt * self.failure_ceiling_factor)
+            ceiling_factor = min(self.failure_ceiling_factor, factor * 1.5) if cut_factor is not None else self.failure_ceiling_factor
+            self._dt_ceiling = max(self.dt_min, failed_dt * ceiling_factor)
             self._steps_at_ceiling = 0
         return self._dt
 
@@ -142,6 +145,7 @@ class AdaptiveDT:
         dt_cfl: float | None = None,
         step_success: bool = True,
         target_error: float = 1e-4,
+        cut_factor: float | None = None,
     ) -> float:
         """
         Compute the next dt based on solver performance and change magnitude.
@@ -156,10 +160,13 @@ class AdaptiveDT:
             Whether the linear solver converged.
         target_error : float
             The desired change per step.
+        cut_factor : float, optional
+            Explicit factor by which to cut dt on failure.
         """
         # 1. Handle step failure
         if not step_success:
-            self._dt = max(self._dt * self.cut_factor, self.dt_min)
+            factor = self.cut_factor if cut_factor is None else cut_factor
+            self._dt = max(self._dt * factor, self.dt_min)
             return self._dt
 
         effective_max = self.get_effective_max()
@@ -648,6 +655,37 @@ def _validate_rates(
     return violation, violation_reason
 
 
+def _format_wall_time(seconds: float) -> str:
+    """Format wall time into human-friendly string."""
+    if seconds < 60:
+        return f"{seconds:5.1f}s"
+    elif seconds < 3600:
+        m = int(seconds // 60)
+        s = int(seconds % 60)
+        return f"{m:02d}m {s:02d}s"
+    else:
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        return f"{h:02d}h {m:02d}m"
+
+
+def _format_sim_speed(sim_seconds: float, wall_seconds: float) -> str:
+    """Format simulated time speedup relative to wall time."""
+    if wall_seconds <= 1e-6:
+        return ""
+    speedup = sim_seconds / wall_seconds
+    if speedup >= 3.1536e7:  # >= 1 yr/sec
+        return f"{speedup / 3.1536e7:.2f} yr/s"
+    elif speedup >= 3.1536e7 / 60.0:  # >= 1 yr/min
+        return f"{(speedup / 3.1536e7) * 60.0:.2f} yr/min"
+    elif speedup >= 86400.0 / 60.0:  # >= 1 day/min
+        return f"{(speedup / 86400.0) * 60.0:.1f} d/min"
+    elif speedup >= 3600.0 / 60.0:  # >= 1 hr/min
+        return f"{(speedup / 3600.0) * 60.0:.1f} h/min"
+    else:
+        return f"{speedup * 60.0:.1f} s/min"
+
+
 def _report_step_status(
     step: int,
     total_time: float,
@@ -663,17 +701,45 @@ def _report_step_status(
     plot_queue: Optional[Any],
     _log: Callable[[str], None],
     sweeps: Optional[int] = None,
+    total_sweeps: Optional[int] = None,
+    start_wall: Optional[float] = None,
+    last_report_wall: Optional[float] = None,
+    last_report_time: Optional[float] = None,
 ) -> None:
     """Logs current step status parameters and triggers async data/plot saving."""
     from .diff_lib import get_delta, get_total_delta
     
     phi = mp.phi
     dz = np.diff(z)
-    fe_total_bulk = phi * c.Fe2_total + (1 - phi) * (c.Fe3 + c.FeS + c.FeS2)
-    m_fe = np.sum(dz * fe_total_bulk[:-1]).value
-    time_str = f" Time: {get_time_units(total_time):.2f~P}"
-    sweeps_str = f", sweeps: {sweeps}" if sweeps is not None else ""
-    
+    fe_total_bulk = phi * c.Fe2_total.value + (1 - phi) * (c.Fe3.value + c.FeS.value + c.FeS2.value)
+    fe_slice = fe_total_bulk if len(fe_total_bulk) == len(dz) else fe_total_bulk[:-1]
+    m_fe = float(np.sum(dz * fe_slice))
+    time_str = f"Time: {get_time_units(total_time):.2f~P}"
+
+    # Sweeps string
+    if sweeps is not None:
+        sweeps_str = f", sweeps: {sweeps}"
+        if total_sweeps is not None:
+            sweeps_str += f" (tot: {total_sweeps})"
+    elif total_sweeps is not None:
+        sweeps_str = f", sweeps: 1 (tot: {total_sweeps})"
+    else:
+        sweeps_str = ""
+
+    # Wall-clock timestamp and throughput metrics
+    wall_prefix = ""
+    perf_str = ""
+    if start_wall is not None:
+        elapsed = time.time() - start_wall
+        wall_prefix = f"[{_format_wall_time(elapsed)}] "
+        if last_report_wall is not None:
+            interval_wall = max(time.time() - last_report_wall, 1e-6)
+            interval_sim = total_time - last_report_time if last_report_time is not None else current_dt
+            report_n = getattr(mp, "report_step", 10)
+            pace = interval_wall / max(report_n, 1)
+            sim_speed = _format_sim_speed(interval_sim, interval_wall)
+            perf_str = f" | {pace:.2f} s/step, {sim_speed}" if sim_speed else f" | {pace:.2f} s/step"
+
     if mp.isotopes:
         d34s = get_total_delta(c, mp)
         fes_mask = c.FeS.value > 1e-3
@@ -689,8 +755,9 @@ def _report_step_status(
         max_dTS2 = float(np.max(v_ts2)) if len(v_ts2) > 0 else np.nan
 
         _log(
-            f"Step {step:4d}, {time_str}, "
-            f"dt: {get_time_units(current_dt):.2f~P}, RMS: {rms_change:.2e}{sweeps_str}, "
+            f"{wall_prefix}Step {step:4d},  {time_str}, "
+            f"dt: {get_time_units(current_dt):.2f~P}{perf_str}{sweeps_str}, "
+            f"RMS: {rms_change:.2e}, "
             f"d34S = {d34s:.2f}, "
             f"dTS2: [{min_dTS2:.1f}, {max_dTS2:.1f}]‰, "
             f"dFeS: [{min_dFeS:.1f}, {max_dFeS:.1f}]‰"
@@ -701,8 +768,9 @@ def _report_step_status(
             title_str = mp.title
     else:
         _log(
-            f"Step {step:4d}, {time_str}, "
-            f"dt: {get_time_units(current_dt):.2f~P}, RMS Chg: {rms_change:.2e}{sweeps_str}, "
+            f"{wall_prefix}Step {step:4d},  {time_str}, "
+            f"dt: {get_time_units(current_dt):.2f~P}{perf_str}{sweeps_str}, "
+            f"RMS Chg: {rms_change:.2e}, "
             f"Total Fe {m_fe:.2e}"
         )
         if mp.title is None:
@@ -784,6 +852,7 @@ def run_non_steady_state_solver_coupled(
         failure_ceiling_factor=float(getattr(mp, "failure_ceiling_factor", 0.7)),
         failure_hold_steps=int(getattr(mp, "failure_hold_steps", 10)),
         ceiling_growth_factor=float(getattr(mp, "ceiling_growth_factor", 1.05)),
+        aggressive_cut_factor=float(getattr(mp, "aggressive_cut_factor", 0.25)),
     )
 
     # --- Initialize Rate-Change-Based Timestep Adaptation ---
@@ -803,6 +872,7 @@ def run_non_steady_state_solver_coupled(
     enable_inner_sweeping = getattr(mp, "enable_inner_sweeping", False)
     max_inner_sweeps = int(getattr(mp, "max_inner_sweeps", 15))
     inner_tol = float(getattr(mp, "inner_tol", 1e-3))
+    near_convergence_tol = float(getattr(mp, "near_convergence_tol", 1.25))
     inner_norm = getattr(mp, "inner_norm", "wrms")
     inner_relaxation = float(getattr(mp, "inner_relaxation", 1.0))
     enable_adaptive_damping = getattr(mp, "enable_adaptive_damping", True)
@@ -811,6 +881,14 @@ def run_non_steady_state_solver_coupled(
     sweep_target_optimal = int(getattr(mp, "sweep_target_optimal", 4))
     sweep_max_acceptable = int(getattr(mp, "sweep_max_acceptable", 7))
     prev_inner_sweeps_count = 1
+
+    # --- Early Bail-Out & Aggressive Non-Linear Cut Settings ---
+    enable_early_bailout = getattr(mp, "enable_early_bailout", True)
+    early_bailout_iter = int(getattr(mp, "early_bailout_iter", 5))
+    early_bailout_err = float(getattr(mp, "early_bailout_err", 3.0))
+    enable_aggressive_cut = getattr(mp, "enable_aggressive_cut", True)
+    aggressive_cut_threshold = float(getattr(mp, "aggressive_cut_threshold", 3.0))
+    aggressive_cut_factor = float(getattr(mp, "aggressive_cut_factor", 0.25))
 
     # --- Initialize Dynamic Isotope dt Limiter ---
     enable_isotope_dt_limiter = getattr(mp, "enable_isotope_dt_limiter", False)
@@ -858,7 +936,10 @@ def run_non_steady_state_solver_coupled(
     )
 
     step = 0
+    total_sweeps = 0
     total_time = mp.start_time
+    last_report_wall = start_wall
+    last_report_time = total_time
     status = "Maximum steps or simulation time reached"
     max_change = 0.0
     title_str = ""
@@ -875,6 +956,7 @@ def run_non_steady_state_solver_coupled(
 
             # --- Solve Step (with automatic retry on failure) ---
             converged = False
+            near_converged_accepted = False
             RATES_tentative = {}
             last_inner_sweeps = 1
             last_inner_err = 0.0
@@ -909,6 +991,7 @@ def run_non_steady_state_solver_coupled(
                                 dt=current_dt,
                                 solver=solver,
                             )
+                            total_sweeps += 1
 
                             # Compute raw error of this solve
                             raw_inner_err = _compute_inner_residual(
@@ -952,12 +1035,42 @@ def run_non_steady_state_solver_coupled(
                                 last_inner_sweeps = inner_iter
                                 break
 
+                            # Early bail-out check: detect hopeless or diverging iterations early
+                            if enable_early_bailout and inner_iter >= early_bailout_iter:
+                                is_diverging = (
+                                    prev_inner_err is not None
+                                    and last_inner_err > prev_inner_err * 1.2
+                                    and last_inner_err > 1.5
+                                )
+                                is_hopeless = (
+                                    last_inner_err > early_bailout_err * 3.0
+                                    or (
+                                        last_inner_err > early_bailout_err
+                                        and (prev_inner_err is not None and last_inner_err >= prev_inner_err * 0.95)
+                                    )
+                                )
+                                if is_diverging or is_hopeless:
+                                    reason = "diverging residual" if is_diverging else "stagnant/hopeless residual"
+                                    raise RuntimeError(
+                                        f"Early bailout at sweep {inner_iter}/{max_inner_sweeps} due to {reason} "
+                                        f"(scaled_err={last_inner_err:.2e} vs threshold={early_bailout_err})"
+                                    )
+
                             prev_inner_err = last_inner_err
 
                         if not inner_converged:
-                            raise RuntimeError(
-                                f"Inner Picard sweep failed to converge in {max_inner_sweeps} iterations (scaled_err={last_inner_err:.2e})"
-                            )
+                            if last_inner_err <= near_convergence_tol:
+                                inner_converged = True
+                                near_converged_accepted = True
+                                last_inner_sweeps = max_inner_sweeps
+                                _log(
+                                    f"[{_format_wall_time(time.time() - start_wall)}]   Near-convergence accepted at sweep {max_inner_sweeps} "
+                                    f"(scaled_err={last_inner_err:.2f} <= near_tol={near_convergence_tol:.2f})."
+                                )
+                            else:
+                                raise RuntimeError(
+                                    f"Inner Picard sweep failed to converge in {max_inner_sweeps} iterations (scaled_err={last_inner_err:.2e})"
+                                )
 
                         if not inner_sweep_equilibrium:
                             mp.in_clip = True
@@ -982,6 +1095,7 @@ def run_non_steady_state_solver_coupled(
                             dt=current_dt,
                             solver=solver,
                         )
+                        total_sweeps += 1
 
                         mp.in_clip = True
                         try:
@@ -1008,22 +1122,39 @@ def run_non_steady_state_solver_coupled(
                         traceback.format_exception(type(e), e, e.__traceback__)
                     )
                     _log(
-                        f"  Step failed at dt={get_time_units(current_dt):.2f~P}: {e}\n  Cutting dt and retrying."
+                        f"[{_format_wall_time(time.time() - start_wall)}]   Step failed at dt={get_time_units(current_dt):.2f~P}: {e}\n  Cutting dt and retrying."
                     )
                     # Restore state from FiPy's built-in old-value store
                     for s_obj in species_struct:
                         s_obj["var"].value[:] = s_obj["var"].old.value
 
+                    # Determine cut factor: aggressive cut on non-linear divergence
+                    use_aggressive_cut = (
+                        enable_inner_sweeping
+                        and enable_aggressive_cut
+                        and (last_inner_err > aggressive_cut_threshold)
+                    )
+                    effective_cut = (
+                        aggressive_cut_factor
+                        if use_aggressive_cut
+                        else dt_controller.cut_factor
+                    )
+                    if use_aggressive_cut:
+                        _log(
+                            f"[{_format_wall_time(time.time() - start_wall)}]   Aggressive dt cut ({effective_cut:.2f}x) triggered: "
+                            f"scaled error {last_inner_err:.2e} exceeds threshold {aggressive_cut_threshold:.2e}."
+                        )
+
                     # Cut time step and retry
                     if step_first_attempt:
-                        current_dt = dt_controller.register_failure(current_dt)
+                        current_dt = dt_controller.register_failure(current_dt, cut_factor=effective_cut)
                         step_first_attempt = False
                         if dt_controller.enable_failure_ceiling and dt_controller._dt_ceiling is not None:
                             _log(
-                                f"  Failure ceiling activated: dt capped at {get_time_units(dt_controller._dt_ceiling):.2f~P} for at least {dt_controller.failure_hold_steps} steps."
+                                f"[{_format_wall_time(time.time() - start_wall)}]   Failure ceiling activated: dt capped at {get_time_units(dt_controller._dt_ceiling):.2f~P} for at least {dt_controller.failure_hold_steps} steps."
                             )
                     else:
-                        current_dt = dt_controller.update(0.0, step_success=False)
+                        current_dt = dt_controller.update(0.0, step_success=False, cut_factor=effective_cut)
                     if current_dt <= mp.dt_min * 1.01:
                         raise RuntimeError(
                             "Solver failed and time step is already at minimum."
@@ -1045,7 +1176,7 @@ def run_non_steady_state_solver_coupled(
                         rate_sign_min_consecutive_cells=rate_sign_min_consecutive_cells,
                     )
                     if violation:
-                        _log(f"  Step rejected at dt={get_time_units(current_dt):.4f~P}: {violation_reason}. Rollback.")
+                        _log(f"[{_format_wall_time(time.time() - start_wall)}]   Step rejected at dt={get_time_units(current_dt):.4f~P}: {violation_reason}. Rollback.")
                         for s_obj in species_struct:
                             s_obj["var"].value[:] = s_obj["var"].old.value
                         
@@ -1055,7 +1186,7 @@ def run_non_steady_state_solver_coupled(
                             step_first_attempt = False
                             if dt_controller.enable_failure_ceiling and dt_controller._dt_ceiling is not None:
                                 _log(
-                                    f"  Failure ceiling activated: dt capped at {get_time_units(dt_controller._dt_ceiling):.2f~P} for at least {dt_controller.failure_hold_steps} steps."
+                                    f"[{_format_wall_time(time.time() - start_wall)}]   Failure ceiling activated: dt capped at {get_time_units(dt_controller._dt_ceiling):.2f~P} for at least {dt_controller.failure_hold_steps} steps."
                                 )
                         else:
                             current_dt = dt_controller.update(0.0, step_success=False)
@@ -1092,7 +1223,14 @@ def run_non_steady_state_solver_coupled(
             # --- Adapt Time Step for Next Iteration ---
             if enable_inner_sweeping and adaptive_sweeps_dt:
                 effective_max = dt_controller.get_effective_max(_log=_log)
-                if last_inner_sweeps <= sweep_target_optimal:
+                if near_converged_accepted:
+                    # Near-convergence accepted: hold dt steady if error is comfortably below near_tol,
+                    # or gently damp (0.95x) only if residual is close to ceiling (> 0.8 * near_convergence_tol)
+                    if last_inner_err > near_convergence_tol * 0.8:
+                        dt_controller._dt = max(dt_controller._dt * 0.95, dt_controller.dt_min)
+                    else:
+                        dt_controller._dt = min(dt_controller._dt, effective_max)
+                elif last_inner_sweeps <= sweep_target_optimal:
                     # If previous step had high sweeps, avoid boom-bust chattering:
                     # test stability by growing mildly (1.02x) rather than full growth_factor
                     if prev_inner_sweeps_count > sweep_max_acceptable:
@@ -1150,7 +1288,13 @@ def run_non_steady_state_solver_coupled(
                     plot_queue,
                     _log,
                     sweeps=last_inner_sweeps if enable_inner_sweeping else None,
+                    total_sweeps=total_sweeps,
+                    start_wall=start_wall,
+                    last_report_wall=last_report_wall,
+                    last_report_time=last_report_time,
                 )
+                last_report_wall = time.time()
+                last_report_time = total_time
 
             # Steady State Check
             if rms_change < mp.dt_tolerance:
@@ -1176,8 +1320,10 @@ def run_non_steady_state_solver_coupled(
         print(traceback.format_exc())
 
     # Final Save
+    elapsed_total = time.time() - start_wall
+    sweeps_rate_str = f", {total_sweeps / max(elapsed_total, 1e-6):.2f} swp/s" if total_sweeps > 0 else ""
     _log(
-        f"Final Report: {status} in {step} steps. Total Wall Time: {time.time() - start_wall:.2f}s"
+        f"Final Report: {status} in {step} steps ({total_sweeps} total sweeps{sweeps_rate_str}). Total Wall Time: {_format_wall_time(elapsed_total)} ({elapsed_total:.2f}s)"
     )
     _log_file.close()
     _compress_log_file(log_path)
