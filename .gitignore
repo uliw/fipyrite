@@ -21,6 +21,7 @@ TAGS
 CLAUDE.md
 *.log
 *.gz
+.unison*
 
 
 
