@@ -15,8 +15,9 @@
 
 * Picard iterations vs vs specific triggers 
 
-| Type   | Iterations | Time [yr] |
-|---------+------------+------|
-| Legacy |      45597 |  210 |
-| Picard |       9370 |  140 |
+| Type        | Iterations | dt [hr] | Time [yr] |
+|-------------+------------+---------+-----------|
+| Legacy      |      45597 |   20.11 |       210 |
+| Picard      |       9370 |   48.02 |       140 |
+| Symmetrical |            |         |           |
 
