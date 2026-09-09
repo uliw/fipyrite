@@ -873,6 +873,7 @@ def run_non_steady_state_solver_coupled(
     max_inner_sweeps = int(getattr(mp, "max_inner_sweeps", 15))
     inner_tol = float(getattr(mp, "inner_tol", 1e-3))
     near_convergence_tol = float(getattr(mp, "near_convergence_tol", 1.25))
+    graceful_acceptance_tol = float(getattr(mp, "graceful_acceptance_tol", near_convergence_tol))
     inner_norm = getattr(mp, "inner_norm", "wrms")
     inner_relaxation = float(getattr(mp, "inner_relaxation", 1.0))
     enable_adaptive_damping = getattr(mp, "enable_adaptive_damping", True)
@@ -881,6 +882,9 @@ def run_non_steady_state_solver_coupled(
     sweep_target_optimal = int(getattr(mp, "sweep_target_optimal", 4))
     sweep_max_acceptable = int(getattr(mp, "sweep_max_acceptable", 7))
     prev_inner_sweeps_count = 1
+    enable_velocity_governor = getattr(mp, "enable_velocity_governor", True)
+    velocity_ema = None
+    velocity_ema_alpha = float(getattr(mp, "velocity_ema_alpha", 0.2))
 
     # --- Early Bail-Out & Aggressive Non-Linear Cut Settings ---
     enable_early_bailout = getattr(mp, "enable_early_bailout", True)
@@ -947,6 +951,7 @@ def run_non_steady_state_solver_coupled(
     try:
         while total_time < mp.t_end and step < mp.max_steps:
             step += 1
+            step_start_wall = time.time()
             current_dt = dt_controller.dt
             step_first_attempt = True
 
@@ -957,6 +962,7 @@ def run_non_steady_state_solver_coupled(
             # --- Solve Step (with automatic retry on failure) ---
             converged = False
             near_converged_accepted = False
+            graceful_accepted = False
             RATES_tentative = {}
             last_inner_sweeps = 1
             last_inner_err = 0.0
@@ -1066,6 +1072,14 @@ def run_non_steady_state_solver_coupled(
                                 _log(
                                     f"[{_format_wall_time(time.time() - start_wall)}]   Near-convergence accepted at sweep {max_inner_sweeps} "
                                     f"(scaled_err={last_inner_err:.2f} <= near_tol={near_convergence_tol:.2f})."
+                                )
+                            elif last_inner_err <= graceful_acceptance_tol:
+                                inner_converged = True
+                                graceful_accepted = True
+                                last_inner_sweeps = max_inner_sweeps
+                                _log(
+                                    f"[{_format_wall_time(time.time() - start_wall)}]   Graceful acceptance at sweep {max_inner_sweeps} "
+                                    f"(scaled_err={last_inner_err:.2f} <= graceful_tol={graceful_acceptance_tol:.2f}). Bypassing step failure."
                                 )
                             else:
                                 raise RuntimeError(
@@ -1223,7 +1237,10 @@ def run_non_steady_state_solver_coupled(
             # --- Adapt Time Step for Next Iteration ---
             if enable_inner_sweeping and adaptive_sweeps_dt:
                 effective_max = dt_controller.get_effective_max(_log=_log)
-                if near_converged_accepted:
+                if graceful_accepted:
+                    # Gracefully accepted at sweep ceiling: damp dt (0.85x) to guide solver back to lower sweeps
+                    dt_controller._dt = max(dt_controller._dt * 0.85, dt_controller.dt_min)
+                elif near_converged_accepted:
                     # Near-convergence accepted: hold dt steady if error is comfortably below near_tol,
                     # or gently damp (0.95x) only if residual is close to ceiling (> 0.8 * near_convergence_tol)
                     if last_inner_err > near_convergence_tol * 0.8:
@@ -1231,19 +1248,32 @@ def run_non_steady_state_solver_coupled(
                     else:
                         dt_controller._dt = min(dt_controller._dt, effective_max)
                 elif last_inner_sweeps <= sweep_target_optimal:
-                    # If previous step had high sweeps, avoid boom-bust chattering:
-                    # test stability by growing mildly (1.02x) rather than full growth_factor
+                    # Healthy, fast convergence in optimal sweeps -> grow dt
                     if prev_inner_sweeps_count > sweep_max_acceptable:
                         growth = 1.02
                     else:
                         growth = dt_controller.growth_factor
                     dt_controller._dt = min(dt_controller._dt * growth, effective_max)
                 elif last_inner_sweeps <= sweep_max_acceptable:
-                    # Healthy convergence in moderate sweeps -> grow dt mildly (1.05x)
-                    dt_controller._dt = min(dt_controller._dt * 1.05, effective_max)
+                    # Moderate sweeps -> hold steady or mild growth (1.02x)
+                    dt_controller._dt = min(dt_controller._dt * 1.02, effective_max)
                 else:
-                    # Approaching sweep limit -> damp dt slightly to stay in comfortable zone
-                    dt_controller._dt = max(dt_controller._dt * 0.9, dt_controller.dt_min)
+                    # Approaching sweep limit -> damp dt to stay in comfortable zone
+                    dt_controller._dt = max(dt_controller._dt * 0.85, dt_controller.dt_min)
+
+                # Simulation Velocity Governor: detect throughput degradation
+                if enable_velocity_governor:
+                    step_wall = max(time.time() - step_start_wall, 1e-4)
+                    v_step = current_dt / step_wall
+                    if velocity_ema is None:
+                        velocity_ema = v_step
+                    else:
+                        # If realized step velocity dropped by >25% compared to EMA
+                        # (e.g. due to retries or expensive multi-sweep solves), apply throughput damping
+                        if v_step < 0.75 * velocity_ema:
+                            dt_controller._dt = max(dt_controller._dt * 0.90, dt_controller.dt_min)
+                        velocity_ema = (1.0 - velocity_ema_alpha) * velocity_ema + velocity_ema_alpha * v_step
+
                 dt_controller._dt_prev = dt_controller._dt
                 prev_inner_sweeps_count = last_inner_sweeps
             elif enable_rate_adaptation:
