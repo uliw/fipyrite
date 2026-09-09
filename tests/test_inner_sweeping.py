@@ -507,3 +507,42 @@ def test_near_convergence_acceptance(mock_save_state, mock_save_data, mock_updat
     # Must succeed in 1 step without retries/failures because near_convergence_tol accepted it!
     assert step == 1
     assert sweep_count == 3
+
+
+@patch("fipyrite.solver_calls._setup_static_coupled_equation")
+@patch("fipyrite.solver_calls._update_static_coefficients")
+@patch("fipyrite.solver_calls.save_data")
+@patch("fipyrite.solver_calls.save_state")
+def test_graceful_acceptance(mock_save_state, mock_save_data, mock_update_coeffs, mock_setup_eq, solver_setup):
+    """Test that a step between near_convergence_tol and graceful_acceptance_tol is gracefully accepted."""
+    mp, c, k, mesh, D_mol, bc_map, z = solver_setup
+    mp.max_steps = 1
+    mp.max_inner_sweeps = 3
+    mp.enable_early_bailout = False
+    mp.inner_tol = 1e-3
+    mp.near_convergence_tol = 1.25
+    mp.graceful_acceptance_tol = 5.0
+    mp.dt_init = 10.0
+
+    mock_coupled_eq = MagicMock()
+    mock_setup_eq.return_value = (mock_coupled_eq, {}, {}, {})
+    mock_update_coeffs.return_value = {"FeS": np.zeros(3), "TS2": np.zeros(3)}
+
+    sweep_count = 0
+    def sweep_graceful(dt, solver):
+        nonlocal sweep_count
+        sweep_count += 1
+        # Change by 2.5e-3 -> scaled error = 2.50 (between near_tol 1.25 and graceful_tol 5.0)
+        c["TS2"].setValue(c["TS2"].value + 2.5e-3)
+        return 0.0
+
+    mock_coupled_eq.sweep.side_effect = sweep_graceful
+
+    step, rms = run_non_steady_state_solver_coupled(
+        mp, c, ["FeS", "TS2"], ["FeS", "TS2"], k, MagicMock(), MagicMock(), mesh, D_mol, bc_map, z
+    )
+
+    # Must succeed in 1 step without raising failure/retry!
+    assert step == 1
+    assert sweep_count == 3
+
