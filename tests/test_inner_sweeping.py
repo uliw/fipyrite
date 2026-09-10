@@ -546,3 +546,72 @@ def test_graceful_acceptance(mock_save_state, mock_save_data, mock_update_coeffs
     assert step == 1
     assert sweep_count == 3
 
+
+@patch("fipyrite.solver_calls._setup_static_coupled_equation")
+@patch("fipyrite.solver_calls._update_static_coefficients")
+@patch("fipyrite.solver_calls.save_data")
+@patch("fipyrite.solver_calls.save_state")
+def test_single_sweep_early_exit(mock_save_state, mock_save_data, mock_update_coeffs, mock_setup_eq, solver_setup):
+    """Test that when enable_single_sweep_exit=True and error <= sweep1_exit_tol, it exits on sweep 1."""
+    mp, c, k, mesh, D_mol, bc_map, z = solver_setup
+    mp.max_steps = 1
+    mp.max_inner_sweeps = 4
+    mp.inner_tol = 1e-3
+    mp.enable_single_sweep_exit = True
+    mp.sweep1_exit_tol = 3.0
+    mp.dt_init = 10.0
+
+    mock_coupled_eq = MagicMock()
+    mock_setup_eq.return_value = (mock_coupled_eq, {}, {}, {})
+    mock_update_coeffs.return_value = {"FeS": np.zeros(3), "TS2": np.zeros(3)}
+
+    sweep_count = 0
+    def sweep_smooth(dt, solver):
+        nonlocal sweep_count
+        sweep_count += 1
+        # Change by 2.0e-3 -> scaled error = 2.00 <= sweep1_exit_tol 3.0
+        c["TS2"].setValue(c["TS2"].value + 2.0e-3)
+        return 0.0
+
+    mock_coupled_eq.sweep.side_effect = sweep_smooth
+
+    step, rms = run_non_steady_state_solver_coupled(
+        mp, c, ["FeS", "TS2"], ["FeS", "TS2"], k, MagicMock(), MagicMock(), mesh, D_mol, bc_map, z
+    )
+
+    # Must succeed in 1 step with exactly 1 sweep!
+    assert step == 1
+    assert sweep_count == 1
+
+
+def test_mttf_growth_governor():
+    """Test that MTTF governor throttles growth factor on rapid failures and restores it on stability."""
+    from fipyrite.solver_calls import AdaptiveDT
+
+    dt_ctrl = AdaptiveDT(
+        dt_min=1.0,
+        dt_max=100.0,
+        dt_initial=10.0,
+        growth_factor=1.20,
+        cut_factor=0.5,
+        enable_mttf_governor=True,
+    )
+    assert dt_ctrl.growth_factor == 1.20
+    assert dt_ctrl.steps_since_failure == 0
+
+    # Rapid failure (steps_since_failure = 2 < 5)
+    dt_ctrl.record_success()
+    dt_ctrl.record_success()
+    assert dt_ctrl.steps_since_failure == 2
+
+    # Register failure: excess growth should be reduced by mttf_x1 (60% cut on 0.20 -> 0.08)
+    dt_ctrl.register_failure(10.0)
+    assert dt_ctrl.steps_since_failure == 0
+    assert dt_ctrl.growth_factor == pytest.approx(1.0 + 0.20 * 0.40, rel=1e-3)
+
+    # 45 stable steps: should recover towards base growth factor (1.20)
+    for _ in range(45):
+        dt_ctrl.record_success()
+    assert dt_ctrl.growth_factor > 1.10
+
+
