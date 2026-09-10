@@ -77,6 +77,17 @@ class AdaptiveDT:
     ceiling_growth_factor: float = 1.05
     aggressive_cut_factor: float = 0.25
 
+    enable_mttf_governor: bool = False
+    mttf_x1: float = 0.60
+    mttf_x2: float = 0.35
+    mttf_x3: float = 0.15
+    mttf_y1: float = 0.02
+    mttf_y2: float = 0.05
+    mttf_y3: float = 0.10
+
+    steps_since_failure: int = 0
+    _base_growth_factor: float = 1.2
+
     _dt: float = 0.0
     _err_prev: float | None = None  # Delay initialization
     _dt_prev: float = 0.0
@@ -87,6 +98,7 @@ class AdaptiveDT:
     def __post_init__(self) -> None:
         self._dt = max(self.dt_min, min(self.dt_initial, self.dt_max))
         self._dt_prev = self._dt
+        self._base_growth_factor = self.growth_factor
         if self.enable_failure_ceiling:
             self._dt_ceiling = self.dt_max
             self._failed_dt = self.dt_max
@@ -98,8 +110,22 @@ class AdaptiveDT:
         return self._dt
 
     def register_failure(self, failed_dt: float, cut_factor: float | None = None) -> float:
-        """Record step failure and set a temporary ceiling."""
+        """Record step failure and set a temporary ceiling or adapt MTTF growth."""
         factor = self.cut_factor if cut_factor is None else cut_factor
+        if self.enable_mttf_governor:
+            excess = max(self.growth_factor - 1.0, 0.0)
+            if self.steps_since_failure < 5:
+                excess *= (1.0 - self.mttf_x1)
+                factor = min(factor, 0.70)
+            elif self.steps_since_failure < 10:
+                excess *= (1.0 - self.mttf_x2)
+                factor = min(factor, 0.75)
+            elif self.steps_since_failure < 20:
+                excess *= (1.0 - self.mttf_x3)
+                factor = min(factor, 0.80)
+            self.growth_factor = 1.0 + max(excess, 0.02)
+            self.steps_since_failure = 0
+
         self._dt = max(failed_dt * factor, self.dt_min)
         if self.enable_failure_ceiling:
             self._failed_dt = failed_dt
@@ -107,6 +133,20 @@ class AdaptiveDT:
             self._dt_ceiling = max(self.dt_min, failed_dt * ceiling_factor)
             self._steps_at_ceiling = 0
         return self._dt
+
+    def record_success(self) -> None:
+        """Record a successful step and adapt dynamic growth factor if MTTF governor is active."""
+        self.steps_since_failure += 1
+        if self.enable_mttf_governor:
+            excess = max(self.growth_factor - 1.0, 0.0)
+            base_excess = max(self._base_growth_factor - 1.0, 0.01)
+            if self.steps_since_failure >= 40:
+                excess = min(base_excess, excess + self.mttf_y3 * base_excess)
+            elif self.steps_since_failure >= 30:
+                excess = min(base_excess, excess + self.mttf_y2 * base_excess)
+            elif self.steps_since_failure >= 20:
+                excess = min(base_excess, excess + self.mttf_y1 * base_excess)
+            self.growth_factor = 1.0 + excess
 
     def cfl_limit(self, dx: float, vel: float, D: float) -> float:
         """Compute global CFL estimate for advection-diffusion."""
@@ -853,6 +893,13 @@ def run_non_steady_state_solver_coupled(
         failure_hold_steps=int(getattr(mp, "failure_hold_steps", 10)),
         ceiling_growth_factor=float(getattr(mp, "ceiling_growth_factor", 1.05)),
         aggressive_cut_factor=float(getattr(mp, "aggressive_cut_factor", 0.25)),
+        enable_mttf_governor=getattr(mp, "enable_mttf_governor", False),
+        mttf_x1=float(getattr(mp, "mttf_x1", 0.60)),
+        mttf_x2=float(getattr(mp, "mttf_x2", 0.35)),
+        mttf_x3=float(getattr(mp, "mttf_x3", 0.15)),
+        mttf_y1=float(getattr(mp, "mttf_y1", 0.02)),
+        mttf_y2=float(getattr(mp, "mttf_y2", 0.05)),
+        mttf_y3=float(getattr(mp, "mttf_y3", 0.10)),
     )
 
     # --- Initialize Rate-Change-Based Timestep Adaptation ---
@@ -885,6 +932,8 @@ def run_non_steady_state_solver_coupled(
     enable_velocity_governor = getattr(mp, "enable_velocity_governor", True)
     velocity_ema = None
     velocity_ema_alpha = float(getattr(mp, "velocity_ema_alpha", 0.2))
+    enable_single_sweep_exit = getattr(mp, "enable_single_sweep_exit", False)
+    sweep1_exit_tol = float(getattr(mp, "sweep1_exit_tol", 3.0))
 
     # --- Early Bail-Out & Aggressive Non-Linear Cut Settings ---
     enable_early_bailout = getattr(mp, "enable_early_bailout", True)
@@ -1039,6 +1088,12 @@ def run_non_steady_state_solver_coupled(
                             if last_inner_err <= 1.0:
                                 inner_converged = True
                                 last_inner_sweeps = inner_iter
+                                break
+
+                            # Check 1-sweep early exit during smooth evolution
+                            if inner_iter == 1 and enable_single_sweep_exit and last_inner_err <= sweep1_exit_tol:
+                                inner_converged = True
+                                last_inner_sweeps = 1
                                 break
 
                             # Early bail-out check: detect hopeless or diverging iterations early
@@ -1223,6 +1278,7 @@ def run_non_steady_state_solver_coupled(
                 solver.tolerance = new_tol
 
             total_time += current_dt
+            dt_controller.record_success()
 
             # --- Update Rate History for Next Step ---
             if enable_rate_adaptation:
