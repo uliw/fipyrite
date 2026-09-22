@@ -112,9 +112,8 @@ def pyrite_model(p_dict: dict, plot_queue=None, experiment="pyrite"):
         "msr_alpha": 1.07,  # MSR enrichment factor in mUr
         "TS2_O2_alpha": 0.995,  # sulfide oxidation enrichment factor in mUr
         "S0_O2_alpha": 1,  # sulfide oxidation enrichment factor in mUr
-        "dispro_SO4_alpha": 1.02,  # about +20 mUr
-        "dispro_hs_alpha": 0.993,  # about -7 mUr
-        "dispro_SO4_hs_split": 0.5,  # i.e. 2 parts SO4, 1 part H2S
+        "dispro_hs_alpha": 0.993,  # H2S fractionation factor (about -7 mUr; SO4 is automatically +21 mUr by mass balance)
+        "dispro_SO4_hs_split": 3.0,  # stoichiometric ratio H2S:SO4 = 3:1 (4 S0 -> 3 H2S + 1 SO4)
         "h2s_hs_alpha": 0.99991542,  # equilibrium fractionation factor between H2S and HS- for 32S (derived from alpha_34 = 1.002)
         "VCDT": 0.044162589,  # VCDT reference ratio
         "K_epsilon_msr": 0.2,  # limit MSR fractionation below 0.2 mmol/L
