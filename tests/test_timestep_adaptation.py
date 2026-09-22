@@ -388,4 +388,87 @@ def test_adaptive_dt_failure_ceiling():
     assert controller._steps_at_ceiling == 0  # Counter reset for the new ceiling
 
 
+def test_porewater_depletion_governor():
+    from fipyrite.solver_calls import apply_porewater_depletion_governor
+
+    mesh = Grid1D(nx=5)
+    # TS2 (dissolved): drops from 2.0 to 1.0 (50% drop at cell 2)
+    var_ts2 = CellVariable(mesh=mesh, value=2.0, hasOld=True)
+    var_ts2.old.value = np.array([2.0, 2.0, 2.0, 2.0, 2.0])
+    var_ts2.value = np.array([2.0, 2.0, 1.0, 2.0, 2.0])  # 50% change at cell 2
+
+    # FeS (solid): drops from 100.0 to 10.0 (90% drop)
+    var_fes = CellVariable(mesh=mesh, value=100.0, hasOld=True)
+    var_fes.old.value = np.array([100.0, 100.0, 100.0, 100.0, 100.0])
+    var_fes.value = np.array([100.0, 100.0, 10.0, 100.0, 100.0])
+
+    species_struct = [
+        {"name": "TS2", "var": var_ts2},
+        {"name": "FeS", "var": var_fes},
+    ]
+    bc_map = {
+        "TS2": {"type": "dissolved", "top": 0.0},
+        "FeS": {"type": "solid", "top": 0.0},
+    }
+
+    # Case 1: Over-depletion (50% change vs 25% target)
+    adapted_dt, obs_rel, lim_sp, lim_cell = apply_porewater_depletion_governor(
+        species_struct=species_struct,
+        bc_map=bc_map,
+        current_dt=10.0,
+        proposed_dt=12.0,
+        max_rel_change=0.25,
+        conc_scale=1e-4,
+    )
+    # Only TS2 (dissolved) is monitored, not FeS (solid)
+    assert lim_sp == "TS2"
+    assert lim_cell == 2
+    assert obs_rel == pytest.approx(1.0 / (1.0 + 1e-4), rel=1e-3)
+    # Factor is (0.25 / ~0.50)^0.5 ~ 0.707 -> adapted_dt ~ 7.07 < 10.0
+    assert adapted_dt < 10.0
+    assert adapted_dt == pytest.approx(10.0 * (0.25 / obs_rel) ** 0.5, rel=1e-3)
+
+    # Case 2: Smooth change (TS2 only changes by 5%)
+    var_ts2.value = np.array([2.0, 2.0, 1.9, 2.0, 2.0])  # 5% change
+    adapted_dt, obs_rel, lim_sp, lim_cell = apply_porewater_depletion_governor(
+        species_struct=species_struct,
+        bc_map=bc_map,
+        current_dt=10.0,
+        proposed_dt=12.0,
+        max_rel_change=0.25,
+        conc_scale=1e-4,
+    )
+    assert obs_rel < 0.10
+    # Allows growth up to proposed_dt
+    assert adapted_dt >= 12.0
+
+    # Case 3: Substance with sub-floor residual solver noise (e.g. O2 in anoxic zone)
+    # Even if noise relative change is large (e.g. from 1e-4 to 2e-4), it must be ignored
+    var_o2 = CellVariable(mesh=mesh, value=1e-4, hasOld=True)
+    var_o2.old.value = np.array([1e-4, 1e-4, 1e-4, 1e-4, 1e-4])
+    var_o2.value = np.array([2e-4, 1e-4, 1e-4, 1e-4, 1e-4])  # 50% relative to denom
+    species_struct_with_noise = [
+        {"name": "TS2", "var": var_ts2},  # 5% change
+        {"name": "O2", "var": var_o2},    # noise at 1e-4 mmol/L (< conc_presence_floor = 1e-3)
+    ]
+    bc_map_with_o2 = {
+        "TS2": {"type": "dissolved", "top": 0.0},
+        "O2": {"type": "dissolved", "top": 0.0},
+    }
+    adapted_dt, obs_rel, lim_sp, lim_cell = apply_porewater_depletion_governor(
+        species_struct=species_struct_with_noise,
+        bc_map=bc_map_with_o2,
+        current_dt=10.0,
+        proposed_dt=12.0,
+        max_rel_change=0.25,
+        conc_scale=1e-4,
+        conc_presence_floor=1e-3,
+    )
+    # O2 noise must be filtered out; TS2 remains the limiting species
+    assert lim_sp == "TS2"
+    assert obs_rel < 0.10
+    assert adapted_dt >= 12.0
+
+
+
 
