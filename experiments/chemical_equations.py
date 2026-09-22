@@ -21,15 +21,16 @@ reactions = [
         "reaction_name": "sulfate_reduction",
         "k_value_name": "poc_k",
         "limiters": ["O2_inhibit", "SO4_implicit", "Fe3_diss_red_inhib"],
+        # FIXME: does fractionation need to be a list of lists?
         "fractionation": [["SO4", "TS2", "msr_alpha", "SO4_alpha_explicit"]],
     },
-
     # --- Class 1 & 2 Secondary Redox Reactions ---
     {
         "reaction": "2 HS + O2 -> 2 S0",
         "reaction_name": "hs_oxidation",
         "k_value_name": "TS2_O2",
         "dynamic_variables": {"HS": "c.TS2 * mp.hs_frac"},
+        # FIXME: does fractionation need to be a list of lists?
         "fractionation": [["HS", "S0", "TS2_O2_alpha", "TS2_alpha_explicit"]],
     },
     {
@@ -37,6 +38,7 @@ reactions = [
         "reaction_name": "hs_oxidation_velde",
         "k_value_name": "TS2_O2",
         "dynamic_variables": {"HS": "c.TS2 * mp.hs_frac"},
+        # FIXME: does fractionation need to be a list of lists?
         "fractionation": [["HS", "SO4", "TS2_O2_alpha", "TS2_alpha_explicit"]],
         "limiters": ["O2_implicit_TS2"],
     },
@@ -65,8 +67,28 @@ reactions = [
         "k_value_name": "Fe2_O2",
     },
     {
-        "reaction": "4 FeS + 9 O2 -> 4 Fe3 + 4 SO4",
         "reaction_name": "FeS_oxidation",
+        "reaction": "4 FeS + 9 O2 -> 4 Fe3 + 4 SO4",
         "k_value_name": "FeS_O2",
-    }
+    },
+    # Currently missing, can these be used with the above scheme?
+    {
+        "reaction_name": "pyrite_oxidation_new",
+        "reaction": "2 FeS2 + 7 O2 -> 2 Fe3 + 4 SO4",
+        "k_value_name": "FeS2_O2",
+    },
+    {
+        # this may need special attention wrt isotope handling since
+        # we have two sulfur sources
+        "reaction_name": "pyrite_formation_fes_s0_new",
+        "reaction": "1 FeS + 1 S0 -> 1 FeS2",
+        "k_value_name": "FeS_S0",
+    },
+    {
+        # this may need special attention wrt isotope handling since
+        # we have two sulfur sources
+        "reaction_name": "pyrite_formation_fes_ts2_new",
+        "reaction": "1 FeS + 1 HS -> 1 FeS2",
+        "k_value_name": "FeS_TS2",
+    },
 ]
