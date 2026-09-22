@@ -39,10 +39,13 @@ reactions = [
 
 import argparse
 import json
+import re
 import sys
 import importlib.util
 from pathlib import Path
 from chempy import Reaction
+from chempy.util.parsing import formula_to_composition
+from chempy.util.periodic import atomic_number, symbols
 
 # Load species.py from experiments relative to package or sys.path
 try:
@@ -64,6 +67,19 @@ KNOWN_MONOD_LIMITERS = {
     "Fe3_implicit": {"species": "Fe3", "K_expr": "mp.K_Fe3 / (1.0 - mp.phi)"},
     "Fe3_diss_red_implicit": {"species": "Fe3", "K_expr": "mp.K_Fe3_diss_red / (1.0 - mp.phi)"},
 }
+
+def validate_reaction_coefficients(reaction: str):
+    """
+    Validate that reaction string contains only integer stoichiometric coefficients.
+    Raises ValueError with explanatory guidance if floating-point/decimal numbers are found.
+    """
+    if re.search(r'\b\d+\.\d+\b', reaction):
+        raise ValueError(
+            f"Reaction '{reaction}' contains non-integer stoichiometric coefficients (e.g. decimals).\n"
+            "ChemPy and FiPy matrix scaling require integer stoichiometry.\n"
+            "Please scale all coefficients by a common factor so they are integers "
+            "(e.g., multiply by 2: '2 FeS2 + 7 O2 -> 2 Fe3 + 4 SO4')."
+        )
 
 def verify_stoichiometry(reaction: str) -> bool:
     """Verify stoichiometry of the reaction string. Currently a stub."""
@@ -125,6 +141,14 @@ def create_reaction(
     code : str
         The complete, auto-generated Python function code.
     """
+    # Validate integer stoichiometric coefficients
+    validate_reaction_coefficients(reaction)
+
+    if dynamic_variables is None:
+        dynamic_variables = {}
+    if "HS" in reaction and "HS" not in dynamic_variables:
+        dynamic_variables["HS"] = "c.TS2 * mp.hs_frac"
+
     # Parse reaction equation using chempy
     rxn = Reaction.from_string(reaction)
     reactants = rxn.reac
@@ -168,6 +192,27 @@ def create_reaction(
         if not ref_species:
             ref_species = "POC" if "POC" in reactants else master_species
 
+        # Validate that ref_species is present in reactants (or mapped)
+        if ref_species and not (
+            ref_species in reactants
+            or (dynamic_variables and ref_species in dynamic_variables)
+            or any(is_same_species(ref_species, r) for r in reactants)
+            or (ref_species == "POC" and "POC" in reactants)
+        ):
+            found_r = None
+            for r in reactants:
+                if is_same_species(r, ref_species) or (ref_species.lower() in r.lower()):
+                    found_r = r
+                    break
+            if found_r:
+                ref_species = found_r
+            else:
+                raise ValueError(
+                    f"Derived or specified ref_species '{ref_species}' (from k_value_name '{k_value_name}') "
+                    f"is not a reactant in reaction '{reaction}' (reactants: {list(reactants.keys())}). "
+                    f"Please verify k_value_name or explicitly specify ref_species."
+                )
+
     # Derive master_species automatically if not specified
     if not master_species:
         # Determine candidate ref_species
@@ -176,8 +221,13 @@ def create_reaction(
         if ref_candidate and ref_candidate != "POC" and not species[ref_candidate].get("solid", False):
             master_species = ref_candidate
         else:
-            # If ref_candidate is solid, check if we need to couple to a liquid sulfur species
-            if "TS2" in reactants or "HS" in reactants:
+            # If ref_candidate is solid:
+            # If all products are solid (e.g. FeS2 in FeS + HS -> FeS2), retain the solid ref_candidate as master
+            has_solid_prod = any(p in species and species[p].get("solid", False) for p in products)
+            has_liquid_prod = any(p in species and not species[p].get("solid", False) for p in products)
+            if ref_candidate and ref_candidate != "POC" and has_solid_prod and not has_liquid_prod:
+                master_species = ref_candidate
+            elif "TS2" in reactants or "HS" in reactants:
                 master_species = "TS2"
             elif ref_candidate and ref_candidate != "POC":
                 master_species = ref_candidate
@@ -201,6 +251,9 @@ def create_reaction(
 
     # Start building code
     code = f"def {reaction_name}(c, k, lim, LHS, RHS, RATES, CROSS, mp):\n"
+    code += '    """\n'
+    code += f'    Reaction: {reaction}\n'
+    code += '    """\n'
     code += f"    has_solid = {has_solid}\n"
 
     # Add dynamic variables mapping
@@ -234,12 +287,17 @@ def create_reaction(
             if k_sp == lookup_key:
                 if r == "POC":
                     terms.append("1.0")
-                elif r == "TS2":
-                    if v_expr == "HS" and dynamic_variables and "HS" in dynamic_variables:
+                elif r in ["TS2", "HS"] or (dynamic_variables and r in dynamic_variables):
+                    base_sp = "TS2" if r in ["TS2", "HS"] else r
+                    if dynamic_variables and (r in dynamic_variables or v_expr in dynamic_variables):
+                        dyn_key = r if (dynamic_variables and r in dynamic_variables) else v_expr
+                        expr = dynamic_variables[dyn_key]
+                        terms.append(expr.replace(f"c.{base_sp}", "1.0"))
+                    elif v_expr == "HS" and dynamic_variables and "HS" in dynamic_variables:
                         expr = dynamic_variables["HS"]
                         terms.append(expr.replace("c.TS2", "1.0"))
                     else:
-                        terms.append(v_expr.replace("c.TS2", "1.0"))
+                        terms.append(v_expr.replace(f"c.{base_sp}", "1.0"))
                 else:
                     terms.append(v_expr.replace(f"c.{r}", "1.0"))
             else:
@@ -273,12 +331,17 @@ def create_reaction(
             if k_sp == lookup_key:
                 if r == "POC":
                     terms.append("1.0")
-                elif r == "TS2":
-                    if v_expr == "HS" and dynamic_variables and "HS" in dynamic_variables:
+                elif r in ["TS2", "HS"] or (dynamic_variables and r in dynamic_variables):
+                    base_sp = "TS2" if r in ["TS2", "HS"] else r
+                    if dynamic_variables and (r in dynamic_variables or v_expr in dynamic_variables):
+                        dyn_key = r if (dynamic_variables and r in dynamic_variables) else v_expr
+                        expr = dynamic_variables[dyn_key]
+                        terms.append(expr.replace(f"c.{base_sp}", "1.0"))
+                    elif v_expr == "HS" and dynamic_variables and "HS" in dynamic_variables:
                         expr = dynamic_variables["HS"]
                         terms.append(expr.replace("c.TS2", "1.0"))
                     else:
-                        terms.append(v_expr.replace("c.TS2", "1.0"))
+                        terms.append(v_expr.replace(f"c.{base_sp}", "1.0"))
                 else:
                     terms.append(v_expr.replace(f"c.{r}", "1.0"))
             else:
@@ -315,16 +378,22 @@ def create_reaction(
         code += "    rate_master = rate_base\n"
         code += f"    coeff_master = {make_coeff_expr(master_species)}\n"
 
+        # Determine if reaction is solid-solid (e.g. FeS + S0 -> FeS2)
+        is_solid_solid = (
+            master_species in species and species[master_species].get("solid", False) and
+            all(r == "POC" or (r in species and species[r].get("solid", False)) for r in reactants)
+        )
+
         # Format reactants and products dictionaries for the helper function
         reac_dict_parts = []
         for r, coeff in reactants.items():
             if not is_same_species(r, master_species):
-                if r == "POC" or (r in species and species[r].get("solid", False)):
+                if r == "POC":
                     coeff_expr = get_coeff_expr(r)
-                    if r == "POC":
-                        reac_dict_parts.append(f"poc_species: {coeff_expr}")
-                    else:
-                        reac_dict_parts.append(f"'{r}': {coeff_expr}")
+                    reac_dict_parts.append(f"poc_species: {coeff_expr}")
+                elif not is_solid_solid and (r in species and species[r].get("solid", False)):
+                    coeff_expr = get_coeff_expr(r)
+                    reac_dict_parts.append(f"'{r}': {coeff_expr}")
         reac_dict_str = "{" + ", ".join(reac_dict_parts) + "}"
 
         prod_dict_parts = []
@@ -359,31 +428,32 @@ def create_reaction(
         # Generate implicit sinks for other reactants
         for r, coeff in reactants.items():
             if not is_same_species(r, master_species):
-                # Generate if POC or if NOT solid
-                if r == "POC" or not (r in species and species[r].get("solid", False)):
+                target_r = "TS2" if r == "HS" else r
+                # Generate if POC or if NOT solid or if solid-solid reaction
+                if target_r == "POC" or not (target_r in species and species[target_r].get("solid", False)) or is_solid_solid:
                     coeff_expr = get_coeff_expr(r)
-                    if r == "POC":
+                    if target_r == "POC":
                         code += f"    coeff_POC = {make_coeff_expr('POC')}\n"
                         code += "    add_implicit_sink(LHS, RATES, poc_species, coeff_POC, rate_base, mp=mp, has_solid=has_solid, c=c)\n"
-                    elif r in species and species[r]["include"]:
+                    elif target_r in species and species[target_r]["include"]:
                         multiplier = f"({coeff_expr}) / {ref_stoich}"
-                        monod_lim_name, k_m_expr = find_monod_limiter(r)
+                        monod_lim_name, k_m_expr = find_monod_limiter(target_r)
                         if monod_scheme != "picard" and monod_lim_name:
-                            code += f"    R_max_{r} = {make_rmax_expr(r, skip_limiter=monod_lim_name, multiplier=multiplier)}\n"
+                            code += f"    R_max_{target_r} = {make_rmax_expr(target_r, skip_limiter=monod_lim_name, multiplier=multiplier)}\n"
                             code += f"    add_monod_sink(\n"
                             code += f"        LHS=LHS, RHS=RHS, RATES=RATES,\n"
-                            code += f"        species='{r}',\n"
-                            code += f"        conc=c.{r},\n"
+                            code += f"        species='{target_r}',\n"
+                            code += f"        conc=c.{target_r},\n"
                             code += f"        K_m={k_m_expr},\n"
-                            code += f"        R_max=R_max_{r},\n"
+                            code += f"        R_max=R_max_{target_r},\n"
                             code += f"        mp=mp,\n"
                             code += f"        has_solid=has_solid,\n"
                             code += f"        scheme=getattr(mp, 'monod_scheme', '{monod_scheme}'),\n"
                             code += f"        c=c,\n"
                             code += f"    )\n"
                         else:
-                            code += f"    coeff_{r} = {make_coeff_expr(r, multiplier=multiplier)}\n"
-                            code += f"    add_implicit_sink(LHS, RATES, '{r}', coeff_{r}, ({multiplier}) * rate_base, mp=mp, has_solid=has_solid, c=c)\n"
+                            code += f"    coeff_{target_r} = {make_coeff_expr(target_r, multiplier=multiplier)}\n"
+                            code += f"    add_implicit_sink(LHS, RATES, '{target_r}', coeff_{target_r}, ({multiplier}) * rate_base, mp=mp, has_solid=has_solid, c=c)\n"
     else:
         # No tracked products, just add implicit sinks for all tracked reactants
         for r, coeff in reactants.items():
@@ -411,65 +481,200 @@ def create_reaction(
                     code += f"    coeff_{r} = {make_coeff_expr(r, multiplier=multiplier)}\n"
                     code += f"    add_implicit_sink(LHS, RATES, '{r}', coeff_{r}, ({multiplier}) * rate_base, mp=mp, has_solid=has_solid, c=c)\n"
 
-    # Isotope generation
-    has_sulfur = any(s in species and "S" in species[s]["formula"] for s in all_parsed_species)
-    if has_sulfur and isotope_suffix:
+    # Generalized Isotope generation
+    # Discover which elements have tracked isotopes in species.py with isotope_suffix
+    tracked_elements = set()
+    if isotope_suffix:
+        elem_sets = []
+        for sp_name in species:
+            if sp_name.endswith(f"_{isotope_suffix}"):
+                base_sp = sp_name[:-len(isotope_suffix)-1]
+                if base_sp in species:
+                    form = species[base_sp].get("formula", "")
+                    if form:
+                        try:
+                            comp = formula_to_composition(form)
+                            elem_sets.append(set(symbols[z - 1] for z in comp))
+                        except Exception:
+                            pass
+        if elem_sets:
+            common = set.intersection(*elem_sets)
+            if common:
+                tracked_elements = common
+            else:
+                from collections import Counter
+                counts = Counter([elem for s in elem_sets for elem in s])
+                tracked_elements = {counts.most_common(1)[0][0]}
+
+    def get_species_formula(s):
+        if s == "HS":
+            return species.get("TS2", {}).get("formula", "H2S")
+        if dynamic_variables and s in dynamic_variables:
+            for sp_name in species:
+                if f"c.{sp_name}" in dynamic_variables[s]:
+                    return species.get(sp_name, {}).get("formula", "")
+        return species.get(s, {}).get("formula", "")
+
+    def get_atom_count(s, elem_sym):
+        form = get_species_formula(s)
+        if not form:
+            return 0
+        try:
+            comp = formula_to_composition(form)
+            z = atomic_number(elem_sym)
+            return comp.get(z, 0)
+        except Exception:
+            return 0
+
+    def get_base_species_name(s):
+        if s == "HS":
+            return "TS2"
+        if dynamic_variables and s in dynamic_variables:
+            for sp_name in species:
+                if f"c.{sp_name}" in dynamic_variables[s]:
+                    return sp_name
+        return s
+
+    def has_isotope_species(s):
+        base_s = get_base_species_name(s)
+        return f"{base_s}_{isotope_suffix}" in species
+
+    def get_isotope_species_name(s):
+        base_s = get_base_species_name(s)
+        return f"{base_s}_{isotope_suffix}"
+
+    active_isotope_elements = []
+    if isotope_suffix:
+        for elem in sorted(tracked_elements):
+            has_reac = any(get_atom_count(r, elem) > 0 and has_isotope_species(r) for r in reactants)
+            has_prod = any(get_atom_count(p, elem) > 0 and has_isotope_species(p) for p in products)
+            if has_reac and has_prod:
+                active_isotope_elements.append(elem)
+
+    if active_isotope_elements and isotope_suffix:
         code += "    if mp.isotopes:\n"
-        if fractionation:
-            for frac in fractionation:
-                source, target, alpha_name, limiter_name = frac
-                code += f"        alpha = 1.0 + (mp.{alpha_name} - 1.0) * lim['{limiter_name}']\n"
-                if dynamic_variables and source in dynamic_variables:
-                    if source == "HS":
-                        code += f"        hs_{isotope_suffix} = partition_equilibrium_isotope_32(\n"
-                        code += f"            c.TS2_{isotope_suffix}, mp.hs_frac, mp.h2s_frac, mp.h2s_hs_alpha\n"
-                        code += f"        )\n"
-                        code += f"        coeff_master_{isotope_suffix} = calculate_fractionated_coeff_32(\n"
-                        code += f"            coeff_master, c.TS2 * mp.hs_frac, hs_{isotope_suffix}, alpha, eps=1e-30\n"
-                        code += f"        )\n"
+        for elem in active_isotope_elements:
+            donors = [r for r in reactants if get_atom_count(r, elem) > 0 and has_isotope_species(r)]
+            recipients = [p for p in products if get_atom_count(p, elem) > 0 and has_isotope_species(p) and p in species and species[p].get("include", True)]
+
+            if len(donors) > 1 and recipients:
+                # Multi-donor reaction (e.g. FeS + S0 -> FeS2 or FeS + HS -> FeS2)
+                for d in donors:
+                    d_iso = get_isotope_species_name(d)
+                    base_d = get_base_species_name(d)
+                    lookup_d = "HS" if d == "TS2" and "HS" in conc_terms_map else d
+                    coeff_d_expr = make_coeff_expr(lookup_d)
+
+                    frac_def = None
+                    if fractionation:
+                        for frac in fractionation:
+                            source_spec = frac[0]
+                            if is_same_species(source_spec, d) or source_spec == base_d:
+                                frac_def = frac
+                                break
+
+                    if frac_def:
+                        source, target, alpha_name, limiter_name = frac_def
+                        code += f"        alpha_{d} = 1.0 + (mp.{alpha_name} - 1.0) * lim['{limiter_name}']\n"
+                        if d == "HS" or (dynamic_variables and d in dynamic_variables and "mp.hs_frac" in dynamic_variables[d]):
+                            code += f"        hs_{isotope_suffix} = partition_equilibrium_isotope_32(\n"
+                            code += f"            c.{d_iso}, mp.hs_frac, mp.h2s_frac, mp.h2s_hs_alpha\n"
+                            code += f"        )\n"
+                            code += f"        coeff_{d}_{isotope_suffix} = calculate_fractionated_coeff_32(\n"
+                            code += f"            {coeff_d_expr}, c.TS2 * mp.hs_frac, hs_{isotope_suffix}, alpha_{d}, eps=1e-30\n"
+                            code += f"        )\n"
+                        else:
+                            code += f"        coeff_{d}_{isotope_suffix} = calculate_fractionated_coeff_32(\n"
+                            code += f"            {coeff_d_expr}, c.{base_d}, c.{d_iso}, alpha_{d}, eps=1e-30\n"
+                            code += f"        )\n"
+                    else:
+                        code += f"        coeff_{d}_{isotope_suffix} = {coeff_d_expr}\n"
+
+                    for p in recipients:
+                        p_iso = get_isotope_species_name(p)
+                        d_stoich = float(reactants.get(d, reactants.get(lookup_d, 1.0)))
+                        code += "        add_coupled_reaction(\n"
+                        code += "            CROSS=CROSS,\n"
+                        code += "            LHS=LHS,\n"
+                        code += "            RATES=RATES,\n"
+                        code += "            mp=mp,\n"
+                        code += f"            master_species={{'{d_iso}': {d_stoich:g}}},\n"
+                        code += "            reactants={},\n"
+                        code += f"            products={{'{p_iso}': 1.0}},\n"
+                        code += f"            coeff_master=coeff_{d}_{isotope_suffix},\n"
+                        code += f"            rate_master=coeff_{d}_{isotope_suffix} * c.{d_iso},\n"
+                        code += "            has_solid=has_solid,\n"
+                        code += f"            reaction_name='{reaction_name}_{d}_{isotope_suffix}',\n"
+                        code += f"            ref_species='{base_d}',\n"
+                        code += f"            stoich_ref={d_stoich:g},\n"
+                        code += "        )\n"
+            else:
+                # Single donor (standard single-source isotope transfer)
+                if fractionation:
+                    for frac in fractionation:
+                        source, target, alpha_name, limiter_name = frac
+                        code += f"        alpha = 1.0 + (mp.{alpha_name} - 1.0) * lim['{limiter_name}']\n"
+                        if dynamic_variables and source in dynamic_variables:
+                            if source == "HS":
+                                code += f"        hs_{isotope_suffix} = partition_equilibrium_isotope_32(\n"
+                                code += f"            c.TS2_{isotope_suffix}, mp.hs_frac, mp.h2s_frac, mp.h2s_hs_alpha\n"
+                                code += f"        )\n"
+                                code += f"        coeff_master_{isotope_suffix} = calculate_fractionated_coeff_32(\n"
+                                code += f"            coeff_master, c.TS2 * mp.hs_frac, hs_{isotope_suffix}, alpha, eps=1e-30\n"
+                                code += f"        )\n"
+                        else:
+                            code += f"        coeff_master_{isotope_suffix} = calculate_fractionated_coeff_32(\n"
+                            code += f"            coeff_master, c.{source}, c.{source}_{isotope_suffix}, alpha, eps=1e-30\n"
+                            code += f"        )\n"
                 else:
-                    code += f"        coeff_master_{isotope_suffix} = calculate_fractionated_coeff_32(\n"
-                    code += f"            coeff_master, c.{source}, c.{source}_{isotope_suffix}, alpha, eps=1e-30\n"
-                    code += f"        )\n"
-        else:
-            code += f"        coeff_master_{isotope_suffix} = coeff_master\n"
+                    code += f"        coeff_master_{isotope_suffix} = coeff_master\n"
 
-        iso_reac_parts = []
-        for r, coeff in reactants.items():
-            if not is_same_species(r, master_species):
-                if r + f"_{isotope_suffix}" in species:
-                    coeff_expr = get_coeff_expr(r)
-                    iso_reac_parts.append(f"'{r}_{isotope_suffix}': {coeff_expr}")
-        iso_reac_str = "{" + ", ".join(iso_reac_parts) + "}"
+                iso_reac_parts = []
+                for r, coeff in reactants.items():
+                    if not is_same_species(r, master_species):
+                        r_iso = get_isotope_species_name(r)
+                        if r_iso in species:
+                            coeff_expr = get_coeff_expr(r)
+                            iso_reac_parts.append(f"'{r_iso}': {coeff_expr}")
+                iso_reac_str = "{" + ", ".join(iso_reac_parts) + "}"
 
-        iso_prod_parts = []
-        for p, coeff in products.items():
-            if p in species and species[p]["include"]:
-                coeff_expr = get_coeff_expr(p, is_product=True)
-                if p + f"_{isotope_suffix}" in species:
-                    iso_prod_parts.append(f"'{p}_{isotope_suffix}': {coeff_expr}")
-        iso_prod_str = "{" + ", ".join(iso_prod_parts) + "}"
+                iso_prod_parts = []
+                for p, coeff in products.items():
+                    if p in species and species[p]["include"]:
+                        p_iso = get_isotope_species_name(p)
+                        if p_iso in species:
+                            n_m = get_atom_count(master_species, elem)
+                            n_p = get_atom_count(p, elem)
+                            coeff_p = float(coeff)
+                            coeff_m = float(reactants.get(master_species, 1.0))
+                            if (n_m > 1 or n_p > 1) and n_m > 0 and n_p > 0:
+                                atom_stoich = (coeff_p * n_p) / (coeff_m * n_m) * coeff_m
+                                iso_prod_parts.append(f"'{p_iso}': {atom_stoich:g}")
+                            else:
+                                coeff_expr = get_coeff_expr(p, is_product=True)
+                                iso_prod_parts.append(f"'{p_iso}': {coeff_expr}")
+                iso_prod_str = "{" + ", ".join(iso_prod_parts) + "}"
 
-        code += "        add_coupled_reaction(\n"
-        code += "            CROSS=CROSS,\n"
-        code += "            LHS=LHS,\n"
-        code += "            RATES=RATES,\n"
-        code += "            mp=mp,\n"
-        code += f"            master_species={{'{master_species}_{isotope_suffix}': {master_coeff_expr}}},\n"
-        code += f"            reactants={iso_reac_str},\n"
-        code += f"            products={iso_prod_str},\n"
-        code += f"            coeff_master=coeff_master_{isotope_suffix},\n"
-        code += f"            rate_master=coeff_master_{isotope_suffix} * c.{master_species}_{isotope_suffix},\n"
-        code += "            has_solid=has_solid,\n"
-        code += f"            reaction_name='{reaction_name}_{isotope_suffix}',\n"
-        if ref_species:
-            code += f"            ref_species='{ref_species}',\n"
-        elif "POC" in reactants:
-            code += "            ref_species=poc_species,\n"
-        else:
-            code += f"            ref_species='{master_species}',\n"
-        code += f"            stoich_ref={ref_stoich},\n"
-        code += "        )\n"
+                code += "        add_coupled_reaction(\n"
+                code += "            CROSS=CROSS,\n"
+                code += "            LHS=LHS,\n"
+                code += "            RATES=RATES,\n"
+                code += "            mp=mp,\n"
+                code += f"            master_species={{'{master_species}_{isotope_suffix}': {master_coeff_expr}}},\n"
+                code += f"            reactants={iso_reac_str},\n"
+                code += f"            products={iso_prod_str},\n"
+                code += f"            coeff_master=coeff_master_{isotope_suffix},\n"
+                code += f"            rate_master=coeff_master_{isotope_suffix} * c.{master_species}_{isotope_suffix},\n"
+                code += "            has_solid=has_solid,\n"
+                code += f"            reaction_name='{reaction_name}_{isotope_suffix}',\n"
+                if ref_species:
+                    code += f"            ref_species='{ref_species}',\n"
+                elif "POC" in reactants:
+                    code += "            ref_species=poc_species,\n"
+                else:
+                    code += f"            ref_species='{master_species}',\n"
+                code += f"            stoich_ref={ref_stoich},\n"
+                code += "        )\n"
 
     return code
 
@@ -528,8 +733,8 @@ def main():
     parser.add_argument(
         "-o", "--output",
         type=str,
-        default="generated_equations.py",
-        help="Path to save the generated Python reactions code. Defaults to generated_equations.py in the current working directory."
+        default="generated_equations_new.py",
+        help="Path to save the generated Python reactions code. Defaults to generated_equations_new.py in the current working directory."
     )
     parser.add_argument(
         "--monod-scheme",
