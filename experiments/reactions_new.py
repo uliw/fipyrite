@@ -23,7 +23,7 @@ from fipyrite.diff_lib import (
     smooth_ramp,
 )
 
-from generated_equations import (
+from ggg import (
     aerobic_respiration,
     dissimilatory_iron_reduction,
     sulfate_reduction,
@@ -34,6 +34,9 @@ from generated_equations import (
     sulfide_mediated_iron_reduction_velde,
     Fe2_oxidation,
     FeS_oxidation,
+    pyrite_formation_fes_ts2_new,
+    pyrite_oxidation_new,
+    pyrite_formation_fes_s0_new,
 )
 
 
@@ -44,7 +47,7 @@ def equilibrium_reactions(mp, c, k, f, RATES, dt):
     transport matrix has been solved.
     """
     import inspect
-
+    
     for r in mp.instantenous_reactions:
         sig = inspect.signature(r[0])
         if "f" in sig.parameters:
@@ -198,110 +201,110 @@ def diagenetic_reactions(mp, c, k, f):
 # PROCESS FUNCTIONS (The Biogeochemistry)
 # =============================================================================
 
-def sulfide_speciation_clip(c, k, mp, dt, RATES, f=None):
-    """Update reporting species (h2s, hs) based on total sulfide (TS2) and pH.
+# def sulfide_speciation_clip(c, k, mp, dt, RATES, f=None):
+#     """Update reporting species (h2s, hs) based on total sulfide (TS2) and pH.
 
-    This is FYI only and does not affect the reaction rates, which are all based on TS2.
-    """
-    c.h2s.setValue(c.TS2 * mp.h2s_frac)
-    c.hs.setValue(c.TS2 * mp.hs_frac)
+#     This is FYI only and does not affect the reaction rates, which are all based on TS2.
+#     """
+#     c.h2s.setValue(c.TS2 * mp.h2s_frac)
+#     c.hs.setValue(c.TS2 * mp.hs_frac)
 
-    if mp.isotopes:
-        hs_frac_val = getattr(mp.hs_frac, "value", mp.hs_frac)
-        h2s_frac_val = getattr(mp.h2s_frac, "value", mp.h2s_frac)
-        alpha_val = getattr(mp.h2s_hs_alpha, "value", mp.h2s_hs_alpha)
+#     if mp.isotopes:
+#         hs_frac_val = getattr(mp.hs_frac, "value", mp.hs_frac)
+#         h2s_frac_val = getattr(mp.h2s_frac, "value", mp.h2s_frac)
+#         alpha_val = getattr(mp.h2s_hs_alpha, "value", mp.h2s_hs_alpha)
 
-        denom = hs_frac_val + alpha_val * h2s_frac_val + 1e-30
-        c.hs_32.setValue(c.TS2_32 * hs_frac_val / denom)
-        c.h2s_32.setValue(c.TS2_32 * alpha_val * h2s_frac_val / denom)
-
-
-def Fe2_sorption_clip(c, k, mp, dt, RATES, f=None):
-    """Handle Iron Partitioning algebraically.
-
-    Instead of calculating rates, we calculate fractions.
-
-    System State: 'fe_total' is the primary variable.
-    Fe2 (liquid) and Fe2_p (solid) are derived helper views.
-    These are not used in the equations, and FYI only.
-    """
-    c.Fe2.setValue(c.Fe2_total * mp.Fe2_diss)
-    c.Fe2_p.setValue(c.Fe2_total * mp.Fe2_sorb)
+#         denom = hs_frac_val + alpha_val * h2s_frac_val + 1e-30
+#         c.hs_32.setValue(c.TS2_32 * hs_frac_val / denom)
+#         c.h2s_32.setValue(c.TS2_32 * alpha_val * h2s_frac_val / denom)
 
 
+# def Fe2_sorption_clip(c, k, mp, dt, RATES, f=None):
+#     """Handle Iron Partitioning algebraically.
 
-def pyrite_formation_S0(c, k, lim, LHS, RHS, RATES, CROSS, mp):
-    """Reaction: 1 FeS + 1 S0 -> 1 FeS2.
+#     Instead of calculating rates, we calculate fractions.
 
-    This is a bit tricky as we have two different S atoms into the same
-    target (FeS2)
-    """
-    has_solid = True  # True if the reactants contain a solid phase species
-    # S0 Sink - SOLID
-    coeff_S0 = k.FeS_S0 * c.FeS
-    add_implicit_sink(
-        LHS,
-        RATES,
-        "S0",
-        coeff_S0,
-        coeff_S0 * c.S0,
-        mp=mp,
-        has_solid=has_solid,
-        c=c,
-    )
+#     System State: 'fe_total' is the primary variable.
+#     Fe2 (liquid) and Fe2_p (solid) are derived helper views.
+#     These are not used in the equations, and FYI only.
+#     """
+#     c.Fe2.setValue(c.Fe2_total * mp.Fe2_diss)
+#     c.Fe2_p.setValue(c.Fe2_total * mp.Fe2_sorb)
 
-    # FeS to FeS2 SOLID, Rate = k * FeS * S0.
-    coeff_FeS = k.FeS_S0 * c.S0
-    add_coupled_reaction(
-        CROSS=CROSS,
-        LHS=LHS,
-        RATES=RATES,
-        mp=mp,
-        master_species="FeS",
-        reactants={},
-        products={"FeS2": 1.0},
-        coeff_master=coeff_FeS,
-        rate_master=coeff_FeS * c.FeS,
-        has_solid=has_solid,
-        reaction_name="pyrite_formation_S0_FeS",
-        ref_species="FeS",
-    )
 
-    if mp.isotopes:
-        # S0 is porewater → must include mp.fac_s to match bulk sink coefficient,
-        # and use "liquid_2_solid" for correct volume conversion to FeS2_32 (solid)
+
+# def pyrite_formation_S0(c, k, lim, LHS, RHS, RATES, CROSS, mp):
+#     """Reaction: 1 FeS + 1 S0 -> 1 FeS2.
+
+#     This is a bit tricky as we have two different S atoms into the same
+#     target (FeS2)
+#     """
+#     has_solid = True  # True if the reactants contain a solid phase species
+#     # S0 Sink - SOLID
+#     coeff_S0 = k.FeS_S0 * c.FeS
+#     add_implicit_sink(
+#         LHS,
+#         RATES,
+#         "S0",
+#         coeff_S0,
+#         coeff_S0 * c.S0,
+#         mp=mp,
+#         has_solid=has_solid,
+#         c=c,
+#     )
+
+#     # FeS to FeS2 SOLID, Rate = k * FeS * S0.
+#     coeff_FeS = k.FeS_S0 * c.S0
+#     add_coupled_reaction(
+#         CROSS=CROSS,
+#         LHS=LHS,
+#         RATES=RATES,
+#         mp=mp,
+#         master_species="FeS",
+#         reactants={},
+#         products={"FeS2": 1.0},
+#         coeff_master=coeff_FeS,
+#         rate_master=coeff_FeS * c.FeS,
+#         has_solid=has_solid,
+#         reaction_name="pyrite_formation_S0_FeS",
+#         ref_species="FeS",
+#     )
+
+#     if mp.isotopes:
+#         # S0 is porewater → must include mp.fac_s to match bulk sink coefficient,
+#         # and use "liquid_2_solid" for correct volume conversion to FeS2_32 (solid)
  
-        # 1st S atom: from S0_32 (porewater) to FeS2_32 (solid)
-        add_coupled_reaction(
-            CROSS=CROSS,
-            LHS=LHS,
-            RATES=RATES,
-            mp=mp,
-            master_species="S0_32",
-            reactants={},
-            products={"FeS2_32": 1.0},
-            coeff_master=k.FeS_S0 * c.FeS,
-            rate_master=k.FeS_S0 * c.FeS * c.S0_32,
-            has_solid=has_solid,
-            reaction_name="pyrite_formation_S0_32",
-            ref_species="FeS",
-        )
+#         # 1st S atom: from S0_32 (porewater) to FeS2_32 (solid)
+#         add_coupled_reaction(
+#             CROSS=CROSS,
+#             LHS=LHS,
+#             RATES=RATES,
+#             mp=mp,
+#             master_species="S0_32",
+#             reactants={},
+#             products={"FeS2_32": 1.0},
+#             coeff_master=k.FeS_S0 * c.FeS,
+#             rate_master=k.FeS_S0 * c.FeS * c.S0_32,
+#             has_solid=has_solid,
+#             reaction_name="pyrite_formation_S0_32",
+#             ref_species="FeS",
+#         )
  
-        # 2nd S atom: from FeS_32 (solid) to FeS2_32 (solid)
-        add_coupled_reaction(
-            CROSS=CROSS,
-            LHS=LHS,
-            RATES=RATES,
-            mp=mp,
-            master_species="FeS_32",
-            reactants={},
-            products={"FeS2_32": 1.0},
-            coeff_master=k.FeS_S0 * c.S0,
-            rate_master=k.FeS_S0 * c.S0 * c.FeS_32,
-            has_solid=has_solid,
-            reaction_name="pyrite_formation_FeS_32",
-            ref_species="FeS",
-        )
+#         # 2nd S atom: from FeS_32 (solid) to FeS2_32 (solid)
+#         add_coupled_reaction(
+#             CROSS=CROSS,
+#             LHS=LHS,
+#             RATES=RATES,
+#             mp=mp,
+#             master_species="FeS_32",
+#             reactants={},
+#             products={"FeS2_32": 1.0},
+#             coeff_master=k.FeS_S0 * c.S0,
+#             rate_master=k.FeS_S0 * c.S0 * c.FeS_32,
+#             has_solid=has_solid,
+#             reaction_name="pyrite_formation_FeS_32",
+#             ref_species="FeS",
+#         )
 
 
 def pyrite_formation_FeS_TS2(c, k, lim, LHS, RHS, RATES, CROSS, mp):
@@ -548,212 +551,212 @@ def S0_disproportionation(c, k, lim, LHS, RHS, RATES, CROSS, mp):
             ref_species="S0",
         )
 
-def FeS_precipitation_dissolution_linearized(c, k, lim, LHS, RHS, RATES, CROSS, mp):
-    """
-    FeS precipitation / dissolution with Picard (Quasi-Linear) formulation.
+# def FeS_precipitation_dissolution_linearized(c, k, lim, LHS, RHS, RATES, CROSS, mp):
+#     """
+#     FeS precipitation / dissolution with Picard (Quasi-Linear) formulation.
 
-    Precipitation (Ω ≥ 1):  Fe2⁺ + HS⁻  →  FeS(s)
-        R_prec = k_prec_eff · (Ω - 1) / (Km + Ω - 1)
-               = prec_coeff_TS2 · TS2^{n+1}
-        where prec_coeff_TS2 = k_prec_eff · mm_factor_prec / (TS2 + 1e-30)
+#     Precipitation (Ω ≥ 1):  Fe2⁺ + HS⁻  →  FeS(s)
+#         R_prec = k_prec_eff · (Ω - 1) / (Km + Ω - 1)
+#                = prec_coeff_TS2 · TS2^{n+1}
+#         where prec_coeff_TS2 = k_prec_eff · mm_factor_prec / (TS2 + 1e-30)
 
-    Dissolution   (Ω < 1):  FeS(s)  →  Fe2⁺ + HS⁻
-        R_diss = k_diss_eff · FeS · (1 - Ω) / (Km + 1 - Ω)
-               = diss_coeff_FeS · FeS^{n+1}
-        where diss_coeff_FeS = k_diss_eff · mm_factor_diss
+#     Dissolution   (Ω < 1):  FeS(s)  →  Fe2⁺ + HS⁻
+#         R_diss = k_diss_eff · FeS · (1 - Ω) / (Km + 1 - Ω)
+#                = diss_coeff_FeS · FeS^{n+1}
+#         where diss_coeff_FeS = k_diss_eff · mm_factor_diss
 
-    Ω = (Fe2_total · Fe2_diss · TS2 · hs_frac) / (H⁺ · Ksp)
+#     Ω = (Fe2_total · Fe2_diss · TS2 · hs_frac) / (H⁺ · Ksp)
 
-    Advantages of Picard form:
-        - Zero explicit residual (no catastrophic cancellation in fast kinetics)
-        - Exact diagonal coupling with 1:1 stoichiometry
-        - Exact isotope ratio inheritance with zero off-diagonal stiffness
-    """
-    import numpy as np
+#     Advantages of Picard form:
+#         - Zero explicit residual (no catastrophic cancellation in fast kinetics)
+#         - Exact diagonal coupling with 1:1 stoichiometry
+#         - Exact isotope ratio inheritance with zero off-diagonal stiffness
+#     """
+#     import numpy as np
     
-    phi = mp.phi
-    has_solid = True  # True for dissolution branch (solid reactant FeS)
-    has_solid_prec = (
-        False  # False for precipitation branch (liquid reactants Fe2_pw, HS-)
-    )
+#     phi = mp.phi
+#     has_solid = True  # True for dissolution branch (solid reactant FeS)
+#     has_solid_prec = (
+#         False  # False for precipitation branch (liquid reactants Fe2_pw, HS-)
+#     )
 
-    # ── Current sweep iterate ─────────────────────────────────────────────
-    Fe2_val = nx.maximum(c.Fe2_total.value, 1e-20)
-    TS2_val = nx.maximum(c.TS2.value, 1e-20)
-    FeS_val = nx.maximum(c.FeS.value, 1e-20)
+#     # ── Current sweep iterate ─────────────────────────────────────────────
+#     Fe2_val = nx.maximum(c.Fe2_total.value, 1e-20)
+#     TS2_val = nx.maximum(c.TS2.value, 1e-20)
+#     FeS_val = nx.maximum(c.FeS.value, 1e-20)
 
-    Fe2_pw = Fe2_val * mp.Fe2_diss
-    hs_val = TS2_val * mp.hs_frac
-    omega_den = k.Hplus * k.FeS_sp + 1e-30
-    omega = Fe2_pw * hs_val / omega_den
+#     Fe2_pw = Fe2_val * mp.Fe2_diss
+#     hs_val = TS2_val * mp.hs_frac
+#     omega_den = k.Hplus * k.FeS_sp + 1e-30
+#     omega = Fe2_pw * hs_val / omega_den
 
-    # ── Per-cell branch selector ──────────────────────────────────────────
-    epsilon = 0.05
-    is_prec = nx.minimum(nx.maximum((omega - (1.0 - epsilon)) / (2.0 * epsilon), 0.0), 1.0)
-    is_diss = 1.0 - is_prec
+#     # ── Per-cell branch selector ──────────────────────────────────────────
+#     epsilon = 0.05
+#     is_prec = nx.minimum(nx.maximum((omega - (1.0 - epsilon)) / (2.0 * epsilon), 0.0), 1.0)
+#     is_diss = 1.0 - is_prec
 
-    Km = 0.5
+#     Km = 0.5
 
-    # ══════════════════════════════════════════════════════════════════════
-    # PRECIPITATION BRANCH (Picard Form: implicit in TS2)
-    # ══════════════════════════════════════════════════════════════════════
-    k_prec_eff = k.FeS_isp * is_prec
+#     # ══════════════════════════════════════════════════════════════════════
+#     # PRECIPITATION BRANCH (Picard Form: implicit in TS2)
+#     # ══════════════════════════════════════════════════════════════════════
+#     k_prec_eff = k.FeS_isp * is_prec
     
-    df = nx.maximum(omega - 1.0, 1e-20)
-    mm_factor_prec = df / (Km + df)
-    is_prec_active = nx.where(omega >= 1.0, 1.0, 0.0)
+#     df = nx.maximum(omega - 1.0, 1e-20)
+#     mm_factor_prec = df / (Km + df)
+#     is_prec_active = nx.where(omega >= 1.0, 1.0, 0.0)
 
-    # Picard pseudo-first-order coefficient in TS2 [1/s]
-    prec_coeff_TS2 = (k_prec_eff * mm_factor_prec / TS2_val) * is_prec_active
-    prec_rate_TS2 = prec_coeff_TS2 * TS2_val
+#     # Picard pseudo-first-order coefficient in TS2 [1/s]
+#     prec_coeff_TS2 = (k_prec_eff * mm_factor_prec / TS2_val) * is_prec_active
+#     prec_rate_TS2 = prec_coeff_TS2 * TS2_val
 
-    # (a) FeS source coupled to TS2
-    add_implicit_coupling_new(
-        CROSS,
-        RATES,
-        LHS,
-        target_species="FeS",
-        source_species="TS2",
-        coeff=prec_coeff_TS2,
-        rate=prec_rate_TS2,
-        mp=mp,
-        has_solid=has_solid_prec,
-        add_lhs_sink=False,
-        stoich_ratio=1.0,
-    )
+#     # (a) FeS source coupled to TS2
+#     add_implicit_coupling_new(
+#         CROSS,
+#         RATES,
+#         LHS,
+#         target_species="FeS",
+#         source_species="TS2",
+#         coeff=prec_coeff_TS2,
+#         rate=prec_rate_TS2,
+#         mp=mp,
+#         has_solid=has_solid_prec,
+#         add_lhs_sink=False,
+#         stoich_ratio=1.0,
+#     )
 
-    # (b) TS2 diagonal sink
-    add_implicit_sink(
-        LHS,
-        RATES,
-        "TS2",
-        prec_coeff_TS2,
-        prec_rate_TS2,
-        mp=mp,
-        has_solid=has_solid_prec,
-    )
+#     # (b) TS2 diagonal sink
+#     add_implicit_sink(
+#         LHS,
+#         RATES,
+#         "TS2",
+#         prec_coeff_TS2,
+#         prec_rate_TS2,
+#         mp=mp,
+#         has_solid=has_solid_prec,
+#     )
 
-    # (c) Fe2_total 1:1 stoichiometric sink coupled to TS2
-    CROSS["Fe2_total"].append(("TS2", -prec_coeff_TS2 * phi))
-    RATES["Fe2_total"] -= prec_rate_TS2 * phi
+#     # (c) Fe2_total 1:1 stoichiometric sink coupled to TS2
+#     CROSS["Fe2_total"].append(("TS2", -prec_coeff_TS2 * phi))
+#     RATES["Fe2_total"] -= prec_rate_TS2 * phi
 
-    # ══════════════════════════════════════════════════════════════════════
-    # DISSOLUTION BRANCH (Picard Form: implicit in FeS)
-    # ══════════════════════════════════════════════════════════════════════
-    k_diss_eff = k.FeS_isd * is_diss
+#     # ══════════════════════════════════════════════════════════════════════
+#     # DISSOLUTION BRANCH (Picard Form: implicit in FeS)
+#     # ══════════════════════════════════════════════════════════════════════
+#     k_diss_eff = k.FeS_isd * is_diss
     
-    us = nx.maximum(1.0 - omega, 1e-20)
-    mm_factor_diss = us / (Km + us)
-    is_diss_active = nx.where(omega < 1.0, 1.0, 0.0)
+#     us = nx.maximum(1.0 - omega, 1e-20)
+#     mm_factor_diss = us / (Km + us)
+#     is_diss_active = nx.where(omega < 1.0, 1.0, 0.0)
 
-    # Picard pseudo-first-order coefficient in FeS [1/s]
-    diss_coeff_FeS = k_diss_eff * mm_factor_diss * is_diss_active
-    diss_rate_FeS = diss_coeff_FeS * FeS_val
+#     # Picard pseudo-first-order coefficient in FeS [1/s]
+#     diss_coeff_FeS = k_diss_eff * mm_factor_diss * is_diss_active
+#     diss_rate_FeS = diss_coeff_FeS * FeS_val
 
-    # (a) FeS diagonal sink & Fe2_total source
-    add_implicit_coupling_new(
-        CROSS,
-        RATES,
-        LHS,
-        target_species="Fe2_total",
-        source_species="FeS",
-        coeff=diss_coeff_FeS,
-        rate=diss_rate_FeS,
-        mp=mp,
-        has_solid=has_solid,
-        add_lhs_sink=True,
-        stoich_ratio=1.0,
-    )
+#     # (a) FeS diagonal sink & Fe2_total source
+#     add_implicit_coupling_new(
+#         CROSS,
+#         RATES,
+#         LHS,
+#         target_species="Fe2_total",
+#         source_species="FeS",
+#         coeff=diss_coeff_FeS,
+#         rate=diss_rate_FeS,
+#         mp=mp,
+#         has_solid=has_solid,
+#         add_lhs_sink=True,
+#         stoich_ratio=1.0,
+#     )
 
-    # (b) TS2 source coupled to FeS
-    add_implicit_coupling_new(
-        CROSS,
-        RATES,
-        LHS,
-        target_species="TS2",
-        source_species="FeS",
-        coeff=diss_coeff_FeS,
-        rate=diss_rate_FeS,
-        mp=mp,
-        has_solid=has_solid,
-        add_lhs_sink=False,
-        stoich_ratio=1.0,
-    )
+#     # (b) TS2 source coupled to FeS
+#     add_implicit_coupling_new(
+#         CROSS,
+#         RATES,
+#         LHS,
+#         target_species="TS2",
+#         source_species="FeS",
+#         coeff=diss_coeff_FeS,
+#         rate=diss_rate_FeS,
+#         mp=mp,
+#         has_solid=has_solid,
+#         add_lhs_sink=False,
+#         stoich_ratio=1.0,
+#     )
 
-    # ══════════════════════════════════════════════════════════════════════
-    # ISOTOPES
-    # ══════════════════════════════════════════════════════════════════════
-    if mp.isotopes:
-        # 1. Precipitation (TS2_32 -> FeS_32)
-        hs_32 = partition_equilibrium_isotope_32(
-            c.TS2_32, mp.hs_frac, mp.h2s_frac, mp.h2s_hs_alpha
-        )
-        hs_val_np = np.asarray(hs_val)
-        hs_32_val = np.asarray(hs_32)
-        TS2_val_np = np.asarray(c.TS2.value)
-        TS2_32_val = np.asarray(c.TS2_32.value)
+#     # ══════════════════════════════════════════════════════════════════════
+#     # ISOTOPES
+#     # ══════════════════════════════════════════════════════════════════════
+#     if mp.isotopes:
+#         # 1. Precipitation (TS2_32 -> FeS_32)
+#         hs_32 = partition_equilibrium_isotope_32(
+#             c.TS2_32, mp.hs_frac, mp.h2s_frac, mp.h2s_hs_alpha
+#         )
+#         hs_val_np = np.asarray(hs_val)
+#         hs_32_val = np.asarray(hs_32)
+#         TS2_val_np = np.asarray(c.TS2.value)
+#         TS2_32_val = np.asarray(c.TS2_32.value)
         
-        f32_default = 1.0 / (1.0 + mp.VCDT)
-        f32_hs = np.where(hs_val_np > 1e-6, hs_32_val / (hs_val_np + 1e-30), f32_default)
-        f32_hs = np.clip(f32_hs, 0.5, 1.5)
+#         f32_default = 1.0 / (1.0 + mp.VCDT)
+#         f32_hs = np.where(hs_val_np > 1e-6, hs_32_val / (hs_val_np + 1e-30), f32_default)
+#         f32_hs = np.clip(f32_hs, 0.5, 1.5)
 
-        # Bulk ratio of total sulfide for porewater sink (prevents d34S_TS2 distortion)
-        f32_TS2 = np.where(TS2_val_np > 1e-6, TS2_32_val / (TS2_val_np + 1e-30), f32_default)
-        f32_TS2 = np.clip(f32_TS2, 0.5, 1.5)
+#         # Bulk ratio of total sulfide for porewater sink (prevents d34S_TS2 distortion)
+#         f32_TS2 = np.where(TS2_val_np > 1e-6, TS2_32_val / (TS2_val_np + 1e-30), f32_default)
+#         f32_TS2 = np.clip(f32_TS2, 0.5, 1.5)
 
-        ratio_hs_ts2 = np.where(f32_TS2 > 1e-10, f32_hs / f32_TS2, 1.0)
-        prec_coeff_FeS_32 = prec_coeff_TS2 * ratio_hs_ts2
+#         ratio_hs_ts2 = np.where(f32_TS2 > 1e-10, f32_hs / f32_TS2, 1.0)
+#         prec_coeff_FeS_32 = prec_coeff_TS2 * ratio_hs_ts2
 
-        # (a) FeS_32 solid source
-        add_implicit_coupling_new(
-            CROSS,
-            RATES,
-            LHS,
-            target_species="FeS_32",
-            source_species="TS2_32",
-            coeff=prec_coeff_FeS_32,
-            rate=prec_rate_TS2 * f32_hs,
-            mp=mp,
-            has_solid=has_solid_prec,
-            add_lhs_sink=False,
-            stoich_ratio=1.0,
-        )
+#         # (a) FeS_32 solid source
+#         add_implicit_coupling_new(
+#             CROSS,
+#             RATES,
+#             LHS,
+#             target_species="FeS_32",
+#             source_species="TS2_32",
+#             coeff=prec_coeff_FeS_32,
+#             rate=prec_rate_TS2 * f32_hs,
+#             mp=mp,
+#             has_solid=has_solid_prec,
+#             add_lhs_sink=False,
+#             stoich_ratio=1.0,
+#         )
 
-        # (b) TS2_32 porewater diagonal sink
-        add_implicit_sink(
-            LHS,
-            RATES,
-            "TS2_32",
-            prec_coeff_TS2,
-            prec_rate_TS2 * f32_TS2,
-            mp=mp,
-            has_solid=has_solid_prec,
-        )
+#         # (b) TS2_32 porewater diagonal sink
+#         add_implicit_sink(
+#             LHS,
+#             RATES,
+#             "TS2_32",
+#             prec_coeff_TS2,
+#             prec_rate_TS2 * f32_TS2,
+#             mp=mp,
+#             has_solid=has_solid_prec,
+#         )
 
-        # 2. Dissolution (FeS_32 -> TS2_32)
-        FeS_val_np = np.asarray(c.FeS.value)
-        FeS_32_val = np.asarray(c.FeS_32.value)
-        f32_FeS = np.where(FeS_val_np > 1e-3, FeS_32_val / (FeS_val_np + 1e-30), f32_hs)
-        f32_FeS = np.clip(f32_FeS, 0.5, 1.5)
+#         # 2. Dissolution (FeS_32 -> TS2_32)
+#         FeS_val_np = np.asarray(c.FeS.value)
+#         FeS_32_val = np.asarray(c.FeS_32.value)
+#         f32_FeS = np.where(FeS_val_np > 1e-3, FeS_32_val / (FeS_val_np + 1e-30), f32_hs)
+#         f32_FeS = np.clip(f32_FeS, 0.5, 1.5)
 
-        add_implicit_coupling_new(
-            CROSS,
-            RATES,
-            LHS,
-            target_species="TS2_32",
-            source_species="FeS_32",
-            coeff=diss_coeff_FeS,
-            rate=diss_rate_FeS * f32_FeS,
-            mp=mp,
-            has_solid=has_solid,
-            add_lhs_sink=True,
-            stoich_ratio=1.0,
-        )
+#         add_implicit_coupling_new(
+#             CROSS,
+#             RATES,
+#             LHS,
+#             target_species="TS2_32",
+#             source_species="FeS_32",
+#             coeff=diss_coeff_FeS,
+#             rate=diss_rate_FeS * f32_FeS,
+#             mp=mp,
+#             has_solid=has_solid,
+#             add_lhs_sink=True,
+#             stoich_ratio=1.0,
+#         )
 
-        # Verbose debug logger (disabled by default to prevent log bloat)
-        import os
-        if getattr(mp, "debug_verbose_fes", False) or os.environ.get("DEBUG_VERBOSE_FES"):
-            _debug_fes_isotopes_report(c, mp, omega, is_prec_active, is_diss_active, f32_hs, f32_FeS)
+#         # Verbose debug logger (disabled by default to prevent log bloat)
+#         import os
+#         if getattr(mp, "debug_verbose_fes", False) or os.environ.get("DEBUG_VERBOSE_FES"):
+#             _debug_fes_isotopes_report(c, mp, omega, is_prec_active, is_diss_active, f32_hs, f32_FeS)
 
 
 def _debug_fes_isotopes_report(c, mp, omega, is_prec_active, is_diss_active, f32_hs, f32_FeS):
@@ -840,9 +843,8 @@ def FeS_precipitation_dissolution_symmetrical_picard(c, k, lim, LHS, RHS, RATES,
     omega = Fe2_pw * hs_val / omega_den
 
     # ── Per-cell branch selector ──────────────────────────────────────────
-    epsilon = 0.05
-    is_prec = nx.minimum(nx.maximum((omega - (1.0 - epsilon)) / (2.0 * epsilon), 0.0), 1.0)
-    is_diss = 1.0 - is_prec
+    is_prec = nx.where(omega >= 1.0, 1.0, 0.0)
+    is_diss = nx.where(omega < 1.0, 1.0, 0.0)
 
     Km = 0.5
 
@@ -851,9 +853,8 @@ def FeS_precipitation_dissolution_symmetrical_picard(c, k, lim, LHS, RHS, RATES,
     # ══════════════════════════════════════════════════════════════════════
     k_prec_eff = k.FeS_isp * is_prec
 
-    df = nx.maximum(omega - 1.0, 1e-20)
+    df = nx.maximum(omega - 1.0, 0.0)
     mm_factor_prec = df / (Km + df)
-    is_prec_active = nx.where(omega >= 1.0, 1.0, 0.0)
 
     # Reactant weighting:
     # - "auto" (default): Patankar limiting-reactant weighting:
@@ -877,7 +878,7 @@ def FeS_precipitation_dissolution_symmetrical_picard(c, k, lim, LHS, RHS, RATES,
         w_TS2 = 1.0 - w_Fe
 
     # Total precipitation rate in porewater [mol / (m^3_pw s)]
-    R_prec = k_prec_eff * mm_factor_prec * is_prec_active
+    R_prec = k_prec_eff * mm_factor_prec
 
     # Picard pseudo-first-order coefficients [1/s]
     prec_coeff_Fe2 = (w_Fe * R_prec) / Fe2_val
@@ -944,16 +945,14 @@ def FeS_precipitation_dissolution_symmetrical_picard(c, k, lim, LHS, RHS, RATES,
     RATES["TS2"] -= prec_rate_Fe2 * phi
 
     # ══════════════════════════════════════════════════════════════════════
-    # DISSOLUTION BRANCH (Picard Form: implicit in FeS)
+    # DISSOLUTION BRANCH (Picard Form: unimolecular in FeS, exact 1:1:1 stoichiometry)
     # ══════════════════════════════════════════════════════════════════════
     k_diss_eff = k.FeS_isd * is_diss
 
-    us = nx.maximum(1.0 - omega, 1e-20)
+    us = nx.maximum(1.0 - omega, 0.0)
     mm_factor_diss = us / (Km + us)
-    is_diss_active = nx.where(omega < 1.0, 1.0, 0.0)
 
-    # Picard pseudo-first-order coefficient in FeS [1/s]
-    diss_coeff_FeS = k_diss_eff * mm_factor_diss * is_diss_active
+    diss_coeff_FeS = k_diss_eff * mm_factor_diss
     diss_rate_FeS = diss_coeff_FeS * FeS_val
 
     # (a) FeS diagonal sink & Fe2_total source
@@ -1089,168 +1088,168 @@ def FeS_precipitation_dissolution_symmetrical_picard(c, k, lim, LHS, RHS, RATES,
 FeS_precipitation_dissolution_symmetrical = FeS_precipitation_dissolution_symmetrical_picard
 
 
-def sulfide_mediated_iron_reduction_old(c, k, lim, LHS, RHS, RATES, CROSS, mp):
-    """Fe3 iron reduction via HS-.
+# def sulfide_mediated_iron_reduction_old(c, k, lim, LHS, RHS, RATES, CROSS, mp):
+#     """Fe3 iron reduction via HS-.
 
-    0.5 HS- + Fe3+ -> 0.5 S0 + Fe2+
+#     0.5 HS- + Fe3+ -> 0.5 S0 + Fe2+
 
-    The reaction is doubly-capped so that at most 70% of either Fe3 or TS2
-    is consumed in a single timestep, guaranteeing perfect stoichiometry and
-    unconditional positivity. Coupling uses a single master implicit variable
-    (Fe3) to ensure exact mass balance across all species.
-    """
-    has_solid = True  # True if the reactants contain a solid phase species
-    # ------------------------------------------------------------------
-    # 1. Current state (using FiPy variables directly for consistency)
-    # ------------------------------------------------------------------
-    TS2_val = nx.maximum(c.TS2, 0.0)
-    hs_val = TS2_val * mp.hs_frac
-    Fe3_val = nx.maximum(c.Fe3, 0.0)
+#     The reaction is doubly-capped so that at most 70% of either Fe3 or TS2
+#     is consumed in a single timestep, guaranteeing perfect stoichiometry and
+#     unconditional positivity. Coupling uses a single master implicit variable
+#     (Fe3) to ensure exact mass balance across all species.
+#     """
+#     has_solid = True  # True if the reactants contain a solid phase species
+#     # ------------------------------------------------------------------
+#     # 1. Current state (using FiPy variables directly for consistency)
+#     # ------------------------------------------------------------------
+#     TS2_val = nx.maximum(c.TS2, 0.0)
+#     hs_val = TS2_val * mp.hs_frac
+#     Fe3_val = nx.maximum(c.Fe3, 0.0)
 
-    # ------------------------------------------------------------------
-    # 2. Rate Calculation and Multi-Reactant Capping
-    # ------------------------------------------------------------------
-    k_base_val = k.Fe3_hs * lim["O2_inhibit"] * lim["Fe3_implicit"]
+#     # ------------------------------------------------------------------
+#     # 2. Rate Calculation and Multi-Reactant Capping
+#     # ------------------------------------------------------------------
+#     k_base_val = k.Fe3_hs * lim["O2_inhibit"] * lim["Fe3_implicit"]
 
-    # Uncapped reaction rate driven by Fe3 consumption [mmol/L_solid/s]
-    rate_uncapped = k_base_val * hs_val * Fe3_val
+#     # Uncapped reaction rate driven by Fe3 consumption [mmol/L_solid/s]
+#     rate_uncapped = k_base_val * hs_val * Fe3_val
 
-    # Total available TS2 reservoir over the next timestep (including chemical production)
-    # RATES contains rates in bulk units (mmol/L_bulk/s), so we divide by porosity to get mmol/L_liquid/s
-    TS2_prod_pw = RATES["TS2"] / (mp.phi + 1e-30)
-    dt_val = getattr(mp, "current_dt", 0.0)
-    dt_safe = nx.maximum(dt_val, 1e-12)
-    TS2_available = nx.maximum(TS2_val + TS2_prod_pw * dt_safe, 0.0)
+#     # Total available TS2 reservoir over the next timestep (including chemical production)
+#     # RATES contains rates in bulk units (mmol/L_bulk/s), so we divide by porosity to get mmol/L_liquid/s
+#     TS2_prod_pw = RATES["TS2"] / (mp.phi + 1e-30)
+#     dt_val = getattr(mp, "current_dt", 0.0)
+#     dt_safe = nx.maximum(dt_val, 1e-12)
+#     TS2_available = nx.maximum(TS2_val + TS2_prod_pw * dt_safe, 0.0)
 
-    # Limit by Fe3 depletion (at most 70% per timestep)
-    max_rate_Fe3 = 0.7 * Fe3_val / dt_safe
+#     # Limit by Fe3 depletion (at most 70% per timestep)
+#     max_rate_Fe3 = 0.7 * Fe3_val / dt_safe
 
-    # Limit by TS2 depletion (0.5 mole TS2 consumed per 1 mole Fe3)
-    # 0.5 * Rate * dt <= 0.7 * TS2_available -> Rate <= 1.4 * TS2_available / dt
-    max_rate_TS2 = 1.4 * TS2_available / dt_safe
+#     # Limit by TS2 depletion (0.5 mole TS2 consumed per 1 mole Fe3)
+#     # 0.5 * Rate * dt <= 0.7 * TS2_available -> Rate <= 1.4 * TS2_available / dt
+#     max_rate_TS2 = 1.4 * TS2_available / dt_safe
 
-    # Actual capped rate
-    rate_actual = nx.minimum(rate_uncapped, nx.minimum(max_rate_Fe3, max_rate_TS2))
-    # rate_actual = rate_uncapped
+#     # Actual capped rate
+#     rate_actual = nx.minimum(rate_uncapped, nx.minimum(max_rate_Fe3, max_rate_TS2))
+#     # rate_actual = rate_uncapped
 
-    # Single master coefficient based on Fe3 [1/s]
-    coeff_master = rate_actual / (Fe3_val + 1e-30)
+#     # Single master coefficient based on Fe3 [1/s]
+#     coeff_master = rate_actual / (Fe3_val + 1e-30)
 
-    # ------------------------------------------------------------------
-    # 3. Fe3 sink (Master Variable) — EXACTLY 1:1
-    # ------------------------------------------------------------------
-    add_implicit_sink(
-        LHS,
-        RATES,
-        "Fe3",
-        coeff_master,
-        rate_actual,
-        mp=mp,
-        has_solid=has_solid,
-        c=c,
-        reaction="sulfide_mediated_iron_reduction",
-    )
+#     # ------------------------------------------------------------------
+#     # 3. Fe3 sink (Master Variable) — EXACTLY 1:1
+#     # ------------------------------------------------------------------
+#     add_implicit_sink(
+#         LHS,
+#         RATES,
+#         "Fe3",
+#         coeff_master,
+#         rate_actual,
+#         mp=mp,
+#         has_solid=has_solid,
+#         c=c,
+#         reaction="sulfide_mediated_iron_reduction",
+#     )
 
-    # ------------------------------------------------------------------
-    # 4. Fe2 source (Coupled to Fe3_new) — EXACTLY 1:1
-    # ------------------------------------------------------------------
-    add_implicit_coupling_new(
-        CROSS,
-        RATES,
-        LHS,
-        target_species="Fe2_total",
-        source_species="Fe3",
-        coeff=coeff_master,
-        rate=rate_actual,
-        mp=mp,
-        has_solid=has_solid,
-        c=c,
-        add_lhs_sink=False,
-        stoich_ratio=1.0,
-        reaction="sulfide_mediated_iron_reduction",
-    )
+#     # ------------------------------------------------------------------
+#     # 4. Fe2 source (Coupled to Fe3_new) — EXACTLY 1:1
+#     # ------------------------------------------------------------------
+#     add_implicit_coupling_new(
+#         CROSS,
+#         RATES,
+#         LHS,
+#         target_species="Fe2_total",
+#         source_species="Fe3",
+#         coeff=coeff_master,
+#         rate=rate_actual,
+#         mp=mp,
+#         has_solid=has_solid,
+#         c=c,
+#         add_lhs_sink=False,
+#         stoich_ratio=1.0,
+#         reaction="sulfide_mediated_iron_reduction",
+#     )
 
-    # ------------------------------------------------------------------
-    # 5. TS2 sink (Coupled to Fe3_new) — EXACTLY 0.5:1
-    # ------------------------------------------------------------------
-    add_implicit_coupling_new(
-        CROSS,
-        RATES,
-        LHS,
-        target_species="TS2",
-        source_species="Fe3",
-        coeff=coeff_master,
-        rate=rate_actual,
-        mp=mp,
-        has_solid=has_solid,
-        c=c,
-        add_lhs_sink=False,
-        stoich_ratio=-0.5,
-        reaction="sulfide_mediated_iron_reduction",
-    )
+#     # ------------------------------------------------------------------
+#     # 5. TS2 sink (Coupled to Fe3_new) — EXACTLY 0.5:1
+#     # ------------------------------------------------------------------
+#     add_implicit_coupling_new(
+#         CROSS,
+#         RATES,
+#         LHS,
+#         target_species="TS2",
+#         source_species="Fe3",
+#         coeff=coeff_master,
+#         rate=rate_actual,
+#         mp=mp,
+#         has_solid=has_solid,
+#         c=c,
+#         add_lhs_sink=False,
+#         stoich_ratio=-0.5,
+#         reaction="sulfide_mediated_iron_reduction",
+#     )
 
-    # ------------------------------------------------------------------
-    # 6. S0 source (Coupled to Fe3_new) — EXACTLY 0.5:1
-    # ------------------------------------------------------------------
-    add_implicit_coupling_new(
-        CROSS,
-        RATES,
-        LHS,
-        target_species="S0",
-        source_species="Fe3",
-        coeff=coeff_master * 0.5,
-        rate=0.5 * rate_actual,
-        mp=mp,
-        has_solid=has_solid,
-        c=c,
-        add_lhs_sink=False,
-        stoich_ratio=1.0,
-        reaction="sulfide_mediated_iron_reduction",
-    )
+#     # ------------------------------------------------------------------
+#     # 6. S0 source (Coupled to Fe3_new) — EXACTLY 0.5:1
+#     # ------------------------------------------------------------------
+#     add_implicit_coupling_new(
+#         CROSS,
+#         RATES,
+#         LHS,
+#         target_species="S0",
+#         source_species="Fe3",
+#         coeff=coeff_master * 0.5,
+#         rate=0.5 * rate_actual,
+#         mp=mp,
+#         has_solid=has_solid,
+#         c=c,
+#         add_lhs_sink=False,
+#         stoich_ratio=1.0,
+#         reaction="sulfide_mediated_iron_reduction",
+#     )
 
-    # ------------------------------------------------------------------
-    # 7. Isotopes (32S)
-    # ------------------------------------------------------------------
-    if mp.isotopes:
-        hs_32 = partition_equilibrium_isotope_32(
-            c.TS2_32, mp.hs_frac, mp.h2s_frac, mp.h2s_hs_alpha
-        )
-        f32 = hs_32 / (TS2_val * mp.hs_frac + 1e-30)
+#     # ------------------------------------------------------------------
+#     # 7. Isotopes (32S)
+#     # ------------------------------------------------------------------
+#     if mp.isotopes:
+#         hs_32 = partition_equilibrium_isotope_32(
+#             c.TS2_32, mp.hs_frac, mp.h2s_frac, mp.h2s_hs_alpha
+#         )
+#         f32 = hs_32 / (TS2_val * mp.hs_frac + 1e-30)
 
-        rate_32 = 0.5 * rate_actual * f32
-        coeff_32 = 0.5 * coeff_master * f32
+#         rate_32 = 0.5 * rate_actual * f32
+#         coeff_32 = 0.5 * coeff_master * f32
 
-        # TS2_32 sink
-        add_implicit_coupling_new(
-            CROSS,
-            RATES,
-            LHS,
-            target_species="TS2_32",
-            source_species="Fe3",
-            coeff=coeff_32,
-            rate=rate_32,
-            mp=mp,
-            has_solid=has_solid,
-            c=c,
-            add_lhs_sink=False,
-            stoich_ratio=-1.0,
-        )
+#         # TS2_32 sink
+#         add_implicit_coupling_new(
+#             CROSS,
+#             RATES,
+#             LHS,
+#             target_species="TS2_32",
+#             source_species="Fe3",
+#             coeff=coeff_32,
+#             rate=rate_32,
+#             mp=mp,
+#             has_solid=has_solid,
+#             c=c,
+#             add_lhs_sink=False,
+#             stoich_ratio=-1.0,
+#         )
 
-        # S0_32 source
-        add_implicit_coupling_new(
-            CROSS,
-            RATES,
-            LHS,
-            target_species="S0_32",
-            source_species="Fe3",
-            coeff=coeff_32,
-            rate=rate_32,
-            mp=mp,
-            has_solid=has_solid,
-            c=c,
-            add_lhs_sink=False,
-            stoich_ratio=1.0,
-        )
+#         # S0_32 source
+#         add_implicit_coupling_new(
+#             CROSS,
+#             RATES,
+#             LHS,
+#             target_species="S0_32",
+#             source_species="Fe3",
+#             coeff=coeff_32,
+#             rate=rate_32,
+#             mp=mp,
+#             has_solid=has_solid,
+#             c=c,
+#             add_lhs_sink=False,
+#             stoich_ratio=1.0,
+#         )
 
 
 
