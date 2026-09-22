@@ -444,23 +444,27 @@ def pyrite_oxidation(c, k, lim, LHS, RHS, RATES, CROSS, mp):
 
 
 def S0_disproportionation(c, k, lim, LHS, RHS, RATES, CROSS, mp):
-    """Calculate elemental sulfur disproportionation.
+    """Calculate microbial elemental sulfur disproportionation.
 
-    Reaction: 3S0 + 8H2O -> H2S + 2SO4
+    Reaction: 4 S0 + 4 H2O -> 3 H2S + SO4 + 2 H+ (or 3 HS- + SO4 + 5 H+)
 
-    Notes
-    -----
-    - The split between H2S and SO4 depends on mp.dispro_SO4_hs_split,
-      which is the ratio between H2S/SO4, typically 1:2 -> 0.5
-    - The isotope fractionation between S0 and H2S is given by mp.dispro_hs_alpha (0.993)
-    - The isotope fractionation between S0 and SO4 is given by mp.dispro_SO4_alpha (1.02)
-    - The reaction constant for the overall reaction is given by k.S0_dispro
-    - The reaction rate depends on S0, and H2S & O2 as inhibitors.
+    Stoichiometry:
+    --------------
+    Internal redox balance strictly dictates a 3:1 split:
+    - 75% of S0 is reduced to H2S / HS- (f_hs = 0.75)
+    - 25% of S0 is oxidized to SO4 (f_SO4 = 0.25)
+
+    Isotopes:
+    ---------
+    Fractionation is defined by a single independent parameter (e.g. dispro_hs_alpha).
+    The sulfate branch is calculated by exact mass complement:
+        coeff_SO4_32 = coeff_S0_base - coeff_hs_32
+    This guarantees exact conservation of S, 32S, and 34S with zero drift.
     """
     has_solid = True  # True if the reactants contain a solid phase species
     # 1. Base Rate Calculation (Master Species: S0)
     # Disproportionation is anaerobic, so O2 is NOT a reactant.
-    # Instead, we use the inhibitor lim["disp_O2_inhibit"] to ensure it only
+    # Instead, we use the inhibitor lim["O2_inhibit"] to ensure it only
     # proceeds under low oxygen conditions.
     rate_uncapped = k.S0_dispro * c.S0 * lim["TS2"] * lim["O2_inhibit"]
 
@@ -472,15 +476,19 @@ def S0_disproportionation(c, k, lim, LHS, RHS, RATES, CROSS, mp):
     coeff_S0_base = rate_actual / (c.S0 + 1e-30)
 
     # 2. Calculate the Stoichiometric Split
-    # If split = 0.5 (1 H2S : 2 SO4), then for 1.5 moles of S0:
-    # 1.0 mole goes to SO4 and 0.5 moles go to H2S
-    split = mp.dispro_SO4_hs_split
-    SO4_fraction = 1.0 / (1.0 + split)
-    h2s_fraction = split / (1.0 + split)
+    # Balanced disproportionation: 4 S0 -> 3 H2S + 1 SO4
+    # Split ratio H2S:SO4 is 3:1 (f_hs = 0.75, f_SO4 = 0.25).
+    split = getattr(mp, "dispro_SO4_hs_split", 3.0)
+    if split == 0.5:
+        # Legacy setting was defined inversely as 1 H2S : 2 SO4;
+        # map to the chemically balanced 3:1 disproportionation stoichiometry.
+        f_hs = 0.75
+        f_SO4 = 0.25
+    else:
+        f_SO4 = 1.0 / (1.0 + split)
+        f_hs = split / (1.0 + split)
 
     # S0 Disproportionation coupling (using the wrapper)
-    coeff_SO4 = coeff_S0_base * SO4_fraction
-    coeff_TS2 = coeff_S0_base * h2s_fraction
     add_coupled_reaction(
         CROSS=CROSS,
         LHS=LHS,
@@ -488,7 +496,7 @@ def S0_disproportionation(c, k, lim, LHS, RHS, RATES, CROSS, mp):
         mp=mp,
         master_species="S0",
         reactants={},
-        products={"SO4": SO4_fraction, "TS2": h2s_fraction},
+        products={"SO4": f_SO4, "TS2": f_hs},
         coeff_master=coeff_S0_base,
         rate_master=coeff_S0_base * c.S0,
         has_solid=has_solid,
@@ -496,26 +504,29 @@ def S0_disproportionation(c, k, lim, LHS, RHS, RATES, CROSS, mp):
         ref_species="S0",
     )
 
-    # O2 Consumption - REMOVED (Disproportionation is anaerobic)
-    # If the user intended this to be S0 oxidation, O2 should be a reactant.
-    # But for disproportionation, it is purely internal redox.
-
-    # 5. Isotopes
+    # 3. Isotopes
     if mp.isotopes:
-        # To maintain isotope mass balance, the 32S leaving S0 must exactly equal
-        # the 32S entering H2S and SO4. If the user-provided alphas do not have a
-        # weighted average of 1.0, mass is created/destroyed. We normalize them here:
-        weighted_alpha = (
-            h2s_fraction * mp.dispro_hs_alpha + SO4_fraction * mp.dispro_SO4_alpha
-        )
-        norm_hs_alpha = mp.dispro_hs_alpha / weighted_alpha
-        norm_SO4_alpha = mp.dispro_SO4_alpha / weighted_alpha
+        # Determine 32S kinetic fractionation factor for the H2S path
+        # If user provides alpha < 1 (e.g. 0.993 for -7 permil 34S depletion),
+        # convert to 32S kinetic alpha: alpha_32 = 1.0 / alpha_34 (~1.00705)
+        raw_alpha_hs = getattr(mp, "dispro_hs_alpha", 0.993)
+        if raw_alpha_hs < 1.0:
+            alpha_hs_32 = 1.0 / raw_alpha_hs
+        else:
+            alpha_hs_32 = raw_alpha_hs
+
+        coeff_hs_tot = coeff_S0_base * f_hs
 
         # Fractionation for H2S path
         coeff_hs_32 = calculate_fractionated_coeff_32(
-            coeff_TS2, c.S0, c.S0_32, norm_hs_alpha, eps=1e-30
+            coeff_hs_tot, c.S0, c.S0_32, alpha_hs_32, eps=1e-30
         )
 
+        # Complementary fraction for SO4 path guarantees exact 32S mass conservation:
+        # coeff_hs_32 + coeff_SO4_32 == coeff_S0_base
+        coeff_SO4_32 = coeff_S0_base - coeff_hs_32
+
+        # Fractionation for H2S path
         add_coupled_reaction(
             CROSS=CROSS,
             LHS=LHS,
@@ -532,10 +543,6 @@ def S0_disproportionation(c, k, lim, LHS, RHS, RATES, CROSS, mp):
         )
 
         # Fractionation for SO4 path
-        coeff_SO4_32 = calculate_fractionated_coeff_32(
-            coeff_SO4, c.S0, c.S0_32, norm_SO4_alpha, eps=1e-30
-        )
-
         add_coupled_reaction(
             CROSS=CROSS,
             LHS=LHS,
@@ -550,6 +557,7 @@ def S0_disproportionation(c, k, lim, LHS, RHS, RATES, CROSS, mp):
             reaction_name="S0_disproportionation_32_SO4",
             ref_species="S0",
         )
+
 
 # def FeS_precipitation_dissolution_linearized(c, k, lim, LHS, RHS, RATES, CROSS, mp):
 #     """
