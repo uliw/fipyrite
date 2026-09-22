@@ -847,6 +847,86 @@ def _report_step_status(
         )
 
 
+def apply_porewater_depletion_governor(
+    species_struct: List[Dict[str, Any]],
+    bc_map: Dict[str, Any],
+    current_dt: float,
+    proposed_dt: float,
+    max_rel_change: float = 0.25,
+    conc_scale: float = 1e-4,
+    conc_presence_floor: float = 1e-3,
+    dt_min: float = 1.0,
+    dt_max: float = 3.1536e7,
+    _log: Optional[Callable[[str], None]] = None,
+    wall_time_str: str = "",
+) -> Tuple[float, float, str, int]:
+    """
+    Relative Porewater Depletion Governor.
+
+    Dynamically bounds the time step based on the maximum fractional temporal
+    change of any active dissolved species:
+        rel_change = max_{s in dissolved} max_{j in active} (|C_s^{n+1} - C_s^n| / (C_s^{n+1} + conc_scale))
+
+    Only cells where the species is physically present (C_new > conc_presence_floor
+    or C_old > conc_presence_floor) are evaluated, avoiding false triggers from
+    iterative linear solver residual noise in deep/exhausted zones (e.g. O2 ~ 1e-4 mmol/L).
+
+    If rel_change exceeds max_rel_change (e.g. 25%), scales down dt to prevent
+    over-depleting porewater intermediate pools and overshooting non-linear
+    equilibrium thresholds (e.g. Omega = 1.0 for FeS precipitation/dissolution).
+
+    If rel_change is well within max_rel_change, sets a soft headroom cap on dt growth
+    to ensure dt does not abruptly jump into an overshooting regime.
+
+    Returns:
+        (adapted_dt, max_observed_rel, limiting_species, limiting_cell)
+    """
+    max_observed_rel = 0.0
+    limiting_species = ""
+    limiting_cell = -1
+
+    for s_obj in species_struct:
+        s_name = s_obj["name"]
+        if bc_map.get(s_name, {}).get("type") != "dissolved":
+            continue
+        c_new = np.asarray(s_obj["var"].value)
+        c_old = np.asarray(s_obj["var"].old.value)
+
+        # Only evaluate cells where the substance is actually present in significant quantity
+        active_mask = (c_new > conc_presence_floor) | (c_old > conc_presence_floor)
+        if not np.any(active_mask):
+            continue
+
+        denom = np.maximum(c_new, 0.0) + conc_scale
+        rel_arr = np.where(active_mask, np.abs(c_new - c_old) / denom, 0.0)
+        loc_max_idx = int(np.argmax(rel_arr))
+        loc_max = float(rel_arr[loc_max_idx])
+        if loc_max > max_observed_rel:
+            max_observed_rel = loc_max
+            limiting_species = s_name
+            limiting_cell = loc_max_idx
+
+    adapted_dt = proposed_dt
+    if max_observed_rel > max_rel_change:
+        # Exceeded target fractional change: scale down dt
+        factor = max(0.5, (max_rel_change / max_observed_rel) ** 0.5)
+        governor_dt = max(dt_min, min(current_dt * factor, proposed_dt))
+        adapted_dt = min(adapted_dt, governor_dt)
+        if _log is not None and factor < 0.98:
+            _log(
+                f"{wall_time_str}  Porewater governor: {limiting_species} changed by "
+                f"{max_observed_rel * 100:.1f}% at cell {limiting_cell} (target: {max_rel_change * 100:.1f}%). "
+                f"dt capped at {get_time_units(adapted_dt):.2f~P}."
+            )
+    elif max_observed_rel > 0.0:
+        # Within target: set soft headroom cap on growth to prevent jumping past threshold
+        headroom = max_rel_change / max(max_observed_rel, 0.01)
+        growth_cap = max(dt_min, min(dt_max, current_dt * min(2.0, headroom ** 0.5)))
+        adapted_dt = min(adapted_dt, growth_cap)
+
+    return adapted_dt, max_observed_rel, limiting_species, limiting_cell
+
+
 def run_non_steady_state_solver_coupled(
     mp: Any,
     c: Any,
@@ -935,6 +1015,11 @@ def run_non_steady_state_solver_coupled(
     enable_single_sweep_exit = getattr(mp, "enable_single_sweep_exit", False)
     sweep1_exit_tol = float(getattr(mp, "sweep1_exit_tol", 3.0))
 
+    # --- Near-Convergence Rate Oscillation Safeguard Settings ---
+    near_conv_rate_species = getattr(mp, "near_conv_rate_species", ["FeS"])
+    near_conv_rate_sign_min_change = float(getattr(mp, "near_conv_rate_sign_min_change", 1e-9))
+    near_conv_rate_sign_min_cells = int(getattr(mp, "near_conv_rate_sign_min_cells", 10))
+
     # --- Early Bail-Out & Aggressive Non-Linear Cut Settings ---
     enable_early_bailout = getattr(mp, "enable_early_bailout", True)
     early_bailout_iter = int(getattr(mp, "early_bailout_iter", 5))
@@ -942,6 +1027,12 @@ def run_non_steady_state_solver_coupled(
     enable_aggressive_cut = getattr(mp, "enable_aggressive_cut", True)
     aggressive_cut_threshold = float(getattr(mp, "aggressive_cut_threshold", 3.0))
     aggressive_cut_factor = float(getattr(mp, "aggressive_cut_factor", 0.25))
+
+    # --- Relative Porewater Depletion Governor Settings ---
+    enable_porewater_governor = getattr(mp, "enable_porewater_governor", enable_inner_sweeping)
+    max_rel_porewater_change = float(getattr(mp, "max_rel_porewater_change", 0.25))
+    porewater_conc_scale = float(getattr(mp, "porewater_conc_scale", 1e-4))
+    porewater_conc_presence_floor = float(getattr(mp, "porewater_conc_presence_floor", 1e-3))
 
     # --- Initialize Dynamic Isotope dt Limiter ---
     enable_isotope_dt_limiter = getattr(mp, "enable_isotope_dt_limiter", False)
@@ -996,6 +1087,7 @@ def run_non_steady_state_solver_coupled(
     status = "Maximum steps or simulation time reached"
     max_change = 0.0
     title_str = ""
+    prev_was_near_converged = False
 
     try:
         while total_time < mp.t_end and step < mp.max_steps:
@@ -1091,7 +1183,12 @@ def run_non_steady_state_solver_coupled(
                                 break
 
                             # Check 1-sweep early exit during smooth evolution
-                            if inner_iter == 1 and enable_single_sweep_exit and last_inner_err <= sweep1_exit_tol:
+                            if (
+                                inner_iter == 1
+                                and enable_single_sweep_exit
+                                and not prev_was_near_converged
+                                and last_inner_err <= sweep1_exit_tol
+                            ):
                                 inner_converged = True
                                 last_inner_sweeps = 1
                                 break
@@ -1120,6 +1217,58 @@ def run_non_steady_state_solver_coupled(
                             prev_inner_err = last_inner_err
 
                         if not inner_converged:
+                            # 1. Check for rate oscillation before accepting near-convergence / graceful exit
+                            rate_oscillation_detected = False
+                            osc_reason = ""
+                            if prev_rates:
+                                RATES_tentative = _update_static_coefficients(
+                                    mp,
+                                    c,
+                                    k,
+                                    diagenetic_reactions,
+                                    LHS_vars,
+                                    RHS_vars,
+                                    CROSS_vars,
+                                    species_list_partial,
+                                )
+                                for r_name in near_conv_rate_species:
+                                    if r_name in RATES_tentative and r_name in prev_rates:
+                                        r_tent = np.asarray(RATES_tentative[r_name])
+                                        r_pr = np.asarray(prev_rates[r_name])
+                                        rate_diff = np.abs(r_tent - r_pr)
+
+                                        # 3-point temporal reversal check: only flag true oscillations
+                                        # (r_pr_2 -> r_pr flipped AND r_pr -> r_tent flipped).
+                                        # A monotonic one-way transition (e.g. advancing reaction/burial front)
+                                        # has (r_pr * r_pr_2 >= 0) and is therefore not flagged.
+                                        if r_name in prev_rates_2:
+                                            r_pr_2 = np.asarray(prev_rates_2[r_name])
+                                            sign_change_mask = (
+                                                (r_tent * r_pr < 0)
+                                                & (r_pr * r_pr_2 < 0)
+                                                & (rate_diff >= near_conv_rate_sign_min_change)
+                                                & (np.abs(r_tent) >= 1e-11)
+                                                & (np.abs(r_pr) >= 1e-11)
+                                            )
+                                        else:
+                                            sign_change_mask = np.zeros_like(r_tent, dtype=bool)
+                                        has_consec, cell_idx, consec_len = _find_consecutive_trues(
+                                            sign_change_mask, near_conv_rate_sign_min_cells
+                                        )
+                                        if has_consec:
+                                            rate_oscillation_detected = True
+                                            osc_reason = (
+                                                f"Rate sign change (oscillation) in {r_name} across {consec_len} consecutive cells "
+                                                f"starting at cell {cell_idx} (prev rate: {r_pr[cell_idx]:.2e}, "
+                                                f"tentative rate: {r_tent[cell_idx]:.2e}, rate change: {rate_diff[cell_idx]:.2e} mol/(m^3*s))"
+                                            )
+                                            break
+
+                            if rate_oscillation_detected:
+                                raise RuntimeError(
+                                    f"Near-convergence rejected at sweep {max_inner_sweeps}: {osc_reason}."
+                                )
+
                             if last_inner_err <= near_convergence_tol:
                                 inner_converged = True
                                 near_converged_accepted = True
@@ -1174,7 +1323,7 @@ def run_non_steady_state_solver_coupled(
 
                     converged = True
 
-                    if enable_rate_adaptation:
+                    if (enable_rate_adaptation or enable_inner_sweeping) and not RATES_tentative:
                         RATES_tentative = _update_static_coefficients(
                             mp,
                             c,
@@ -1215,6 +1364,7 @@ def run_non_steady_state_solver_coupled(
                         )
 
                     # Cut time step and retry
+                    prev_was_near_converged = True
                     if step_first_attempt:
                         current_dt = dt_controller.register_failure(current_dt, cut_factor=effective_cut)
                         step_first_attempt = False
@@ -1278,10 +1428,16 @@ def run_non_steady_state_solver_coupled(
                 solver.tolerance = new_tol
 
             total_time += current_dt
-            dt_controller.record_success()
+            if not (near_converged_accepted or graceful_accepted):
+                dt_controller.record_success()
+            else:
+                # Near-converged or gracefully accepted steps are at the edge of stability:
+                # Reset consecutive failure-free streak so MTTF does not boost growth_factor
+                dt_controller.steps_since_failure = 0
+            prev_was_near_converged = near_converged_accepted or graceful_accepted
 
             # --- Update Rate History for Next Step ---
-            if enable_rate_adaptation:
+            if enable_rate_adaptation or enable_inner_sweeping:
                 prev_dt_2 = prev_dt
                 prev_dt = current_dt
                 for name in monitored_rate_species:
@@ -1297,12 +1453,8 @@ def run_non_steady_state_solver_coupled(
                     # Gracefully accepted at sweep ceiling: damp dt (0.85x) to guide solver back to lower sweeps
                     dt_controller._dt = max(dt_controller._dt * 0.85, dt_controller.dt_min)
                 elif near_converged_accepted:
-                    # Near-convergence accepted: hold dt steady if error is comfortably below near_tol,
-                    # or gently damp (0.95x) only if residual is close to ceiling (> 0.8 * near_convergence_tol)
-                    if last_inner_err > near_convergence_tol * 0.8:
-                        dt_controller._dt = max(dt_controller._dt * 0.95, dt_controller.dt_min)
-                    else:
-                        dt_controller._dt = min(dt_controller._dt, effective_max)
+                    # Near-convergence accepted: gently damp dt (0.90x) to guide solver back to optimal sweeps
+                    dt_controller._dt = max(dt_controller._dt * 0.90, dt_controller.dt_min)
                 elif last_inner_sweeps <= sweep_target_optimal:
                     # Healthy, fast convergence in optimal sweeps -> grow dt
                     if prev_inner_sweeps_count > sweep_max_acceptable:
@@ -1324,9 +1476,9 @@ def run_non_steady_state_solver_coupled(
                     if velocity_ema is None:
                         velocity_ema = v_step
                     else:
-                        # If realized step velocity dropped by >25% compared to EMA
-                        # (e.g. due to retries or expensive multi-sweep solves), apply throughput damping
-                        if v_step < 0.75 * velocity_ema:
+                        # Option B: Only damp dt if throughput dropped due to retried step failures
+                        # or exceeding acceptable sweeps (do not penalize normal multi-sweep convergence)
+                        if v_step < 0.75 * velocity_ema and (not step_first_attempt or last_inner_sweeps > sweep_max_acceptable):
                             dt_controller._dt = max(dt_controller._dt * 0.90, dt_controller.dt_min)
                         velocity_ema = (1.0 - velocity_ema_alpha) * velocity_ema + velocity_ema_alpha * v_step
 
@@ -1344,6 +1496,25 @@ def run_non_steady_state_solver_coupled(
                     step_success=True,
                     target_error=adaptive_target,
                 )
+
+            # --- Apply Dynamic Relative Porewater Depletion Governor ---
+            if enable_porewater_governor:
+                wall_str = f"[{_format_wall_time(time.time() - start_wall)}] "
+                adapted_dt, obs_rel, lim_sp, lim_cell = apply_porewater_depletion_governor(
+                    species_struct=species_struct,
+                    bc_map=bc_map,
+                    current_dt=current_dt,
+                    proposed_dt=dt_controller._dt,
+                    max_rel_change=max_rel_porewater_change,
+                    conc_scale=porewater_conc_scale,
+                    conc_presence_floor=porewater_conc_presence_floor,
+                    dt_min=dt_controller.dt_min,
+                    dt_max=dt_controller.dt_max,
+                    _log=_log,
+                    wall_time_str=wall_str,
+                )
+                dt_controller._dt = adapted_dt
+                dt_controller._dt_prev = adapted_dt
 
             # --- Apply Dynamic Isotope dt Limiter ---
             if enable_isotope_dt_limiter and getattr(mp, "isotopes", False):
