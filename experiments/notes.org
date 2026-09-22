@@ -21,3 +21,10 @@
 | Picard      |       9370 |   48.02 |       140 |
 | Symmetrical |            |         |           |
 
+
+** <2026-09-18 Fri>
+
+1) full model: has dispro, but no epsilon. failed after 38 years, as its required dt < 1s, no FeS buildup 
+2) full model 1: has dispro, no e, but faster FeS. failed, even so it reports convergence after 60 years as required dt < 1s , has FeS builduip
+3) full model 1 d: has dispro and e, interrupted after 90 years. wird results though
+4) full model 1d n, faild after 60 years, weird results. 
