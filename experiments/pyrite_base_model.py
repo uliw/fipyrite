@@ -56,8 +56,8 @@ def pyrite_model(p_dict: dict, plot_queue=None, experiment="pyrite"):
         "plot_name": f"{experiment}",
         "state_data": None,  # f"{experiment}_state.npz",
         "layout_file": "plot_layout.py",
-        "process_monitor": "none",  # gui | video | none
-        "process_monitor": "gui",  # gui | video | none
+        # "process_monitor": "none",  # gui | video | none
+        # "process_monitor": "gui",  # gui | video | none
         "process_monitor": "video",  # gui | video | none
         "report_step": 10,  # how often to update plot
         "backup_step": 1000,  # create backups every nth step
@@ -108,6 +108,7 @@ def pyrite_model(p_dict: dict, plot_queue=None, experiment="pyrite"):
         # --------- Isotopes ----------------------------------- #
         "isotopes": True,
         "SO4_d": 21,  # seawater delta
+        "S0_d": 8, 
         "msr_alpha": 1.07,  # MSR enrichment factor in mUr
         "TS2_O2_alpha": 0.995,  # sulfide oxidation enrichment factor in mUr
         "S0_O2_alpha": 1,  # sulfide oxidation enrichment factor in mUr
@@ -129,29 +130,20 @@ def pyrite_model(p_dict: dict, plot_queue=None, experiment="pyrite"):
         # parameters controlling the dynamic time step adaption
         "dt_target_change": 100,  # target change per step (for dt adaptation)
         "solver_backend": "default",  # see solver_calls for options
-        # "solver_backend": "LinearGMRESSolver",  # see solver_calls for options
-         "enable_failure_ceiling": True,
-        "failure_ceiling_factor": 0.7,           # cap dt at 70% of failed dt (e.g. 35h -> 24.5h)
-        "failure_hold_steps": 10,                # hold ceiling for 10 successful steps
-        "ceiling_growth_factor": 1.05,           # cautiously relax ceiling by 5% per step after hold
-        "enable_rate_adaptation": True,
-        "enable_rate_magnitude_check": True,
-        "rate_threshold": 1e-6,
-        "rate_sign_min_change": 1e-9,            # mol/(m^3*s) minimum rate change to consider oscillation
-        "rate_sign_min_consecutive_cells": 10,
-        # "enable_isotope_dt_limiter": True,
-        "isotope_limiter_species": "FeS",        # default
+        "solver_backend": "LinearGMRESSolver",  # see solver_calls for options
+        #  "enable_failure_ceiling": True,
+        # "failure_ceiling_factor": 0.7,           # cap dt at 70% of failed dt (e.g. 35h -> 24.5h)
+        # "failure_hold_steps": 10,                # hold ceiling for 10 successful steps
+        # "ceiling_growth_factor": 1.05,           # cautiously relax ceiling by 5% per step after hold
+        # "enable_rate_adaptation": True,
+        # "enable_rate_magnitude_check": True,
+        # "rate_threshold": 1e-6,
+        # "rate_sign_min_change": 1e-9,            # mol/(m^3*s) minimum rate change to consider oscillation
+        # "rate_sign_min_consecutive_cells": 10,
+        # # "enable_isotope_dt_limiter": True,
+        # "isotope_limiter_species": "FeS",        # default
         # --------- Inner Sweeping Parameters (Method 1) ------- #
-        "enable_inner_sweeping": True,
-        "max_inner_sweeps": 15,
-        "inner_tol": 1e-3,
-        "inner_norm": "wrms",
-        "inner_relaxation": 1.0,
-        "enable_adaptive_damping": True,
-        "inner_sweep_equilibrium": True,
-        "adaptive_sweeps_dt": True,
-        "sweep_target_optimal": 4,
-        "sweep_max_acceptable": 7,
+      
         # ---------  Other ------------------------------------ #
         "current_dt": 0.0,  # place holder
         "display_length": 2,  #
@@ -185,15 +177,15 @@ def pyrite_model(p_dict: dict, plot_queue=None, experiment="pyrite"):
         [rn.hs_oxidation, k],
         [rn.elemental_sulfur_oxidation, k],
         [rn.sulfide_mediated_iron_reduction, k],
-        [rn.Fe2_oxidation, k],
-        [rn.FeS_precipitation_dissolution_linearized, k],
+        # [rn.Fe2_oxidation, k],
+        # [rn.FeS_precipitation_dissolution_linearized, k],
         # [rn.FeS_precipitation_terminal, k],
         # [rn.FeS_dissolution, k],
-        [rn.FeS_oxidation, k],
-        [rn.pyrite_formation_S0, k],
-        [rn.pyrite_formation_FeS_TS2, k],
-        [rn.pyrite_oxidation, k],
-        [rn.S0_disproportionation, k],
+        # [rn.FeS_oxidation, k],
+        # [rn.pyrite_formation_S0, k],
+        # [rn.pyrite_formation_FeS_TS2, k],
+        # [rn.pyrite_oxidation, k],
+        # [rn.S0_disproportionation, k],
     ]
 
     mp["instantenous_reactions"] = [
@@ -226,6 +218,7 @@ def pyrite_model(p_dict: dict, plot_queue=None, experiment="pyrite"):
     # get delta values for sulfate/sulfide boundary conditions.
     mp.bc_SO4_32 = get_l_mass(mp.bc_SO4, mp.SO4_d, mp.VCDT)
     mp.bc_TS2_32 = get_l_mass(mp.bc_TS2, 0.0, mp.VCDT)  # Assume 0 delta for bc_h2s
+    mp.bc_S0_32 = get_l_mass(mp.bc_S0, getattr(mp, "S0_d", 8.0), mp.VCDT)
 
     # -----------------------------------------------------------------------------
     # 3. VARIABLES & DIFFUSION PROFILES
@@ -348,8 +341,8 @@ def pyrite_model(p_dict: dict, plot_queue=None, experiment="pyrite"):
     if mp.isotopes:
         bc_map.update({
             "SO4_32": {"top": mp.bc_SO4_32, "type": "dissolved"},
-            "TS2_32": {"top": mp.bc_TS2, "type": "dissolved"},
-            "S0_32": {"top": mp.bc_S0, "type": "particulate"},
+            "TS2_32": {"top": mp.bc_TS2_32, "type": "dissolved"},
+            "S0_32": {"top": mp.bc_S0_32, "type": "particulate"},
             "FeS_32": {"top": 0.0, "type": "particulate"},
             "FeS2_32": {"top": 0.0, "type": "particulate"},
         })
