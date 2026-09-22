@@ -86,7 +86,7 @@ def get_layout(df):
             "left_ylabel": r"Concentration [mmol/L$_{PW}$]",
             # right 1
             "right1": [
-                # [FeS2_fe, r"FeS$_{2}$ [wt% Fe]", FeS2_attr],
+                [FeS2_fe, r"FeS$_{2}$ [wt% Fe]", FeS2_attr],
                 [FeS_fe, r"FeS [wt% Fe]", FeS_attr],
                 [Fe3_fe, r"Fe$^{3+}$ [wt% Fe]", Fe3_attr],
                 # [Fe2_fe_sorbed, r"Fe$^{2+}_{sorbed}$ [wt% Fe]", Fe2_s_attr],
@@ -101,7 +101,7 @@ def get_layout(df):
             "right2": [
                 # [POC_slow, r"POC_slow [wt% C]", POC_slow_attr],
                 # [POC_fast, r"POC_fast [wt% C]", POC_fast_attr],
-                # [S0_s, r"S$^{0}$ [wt% S]", S0_attr],
+                [S0_s, r"S$^{0}$ [wt% S]", S0_attr],
                 # [FeS2_s, r"FeS$_2$ [wt% S]", {"color": "black"}],
                 # [FeS_s, r"$\times$ FeS [wt% S]", {"color": "C6"}],
             ],
@@ -129,7 +129,7 @@ def get_layout(df):
                 # [df.f_Fe2_total, r"Fe$^{2+}_{liq}$", Fe2_l_attr],
                 [df.f_FeS, "FeS", FeS_attr],
                 [df.f_Fe3, r"Fe$^{3+}$", Fe3_attr],
-                # [df.f_FeS2, r"FeS$_{2}$", FeS2_attr_nf],
+                [df.f_FeS2, r"FeS$_{2}$", FeS2_attr_nf],
                 # [
                 #     df.f_r_sulfide_mediated_iron_reduction_S0,
                 #     r"Fe3_reduction_S0",
@@ -141,6 +141,7 @@ def get_layout(df):
                 [df.f_POC_slow + df.f_POC_fast, r"POC", POC_attr],
                 [df.f_Fe2_p, "f_Fe2+p", {"color": "C9"}],
                 [df.f_TS2, "f_TS2", TS2_attr],
+                [df.f_S0, "f_S0", S0_attr],
             ],
             "left_ylabel": r"reaction rate [mol m$^{-3}s^{-1}$]",
             "xscale": "log",
