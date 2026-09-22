@@ -72,7 +72,7 @@ def get_reaction_constants(
         "S0_O2": [4e7, "cm^3/(umol*year)", "m^3/(mol*second)"],
         # Iron sulfide reactions after Velde at eal 2016
         "FeS_isp": [
-            1,
+            1e-2 * 100, # After Velde.
             "umol/((cm^3*year))",
             "mol/(m^3 *second)",
         ],  # FeS precipitation
