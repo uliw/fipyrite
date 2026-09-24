@@ -5,6 +5,7 @@ build/
 ltximg/
 notes/
 dist/
+nbk/
 wheels/
 *.egg-info
 TAGS
