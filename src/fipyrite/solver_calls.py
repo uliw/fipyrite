@@ -35,6 +35,7 @@ from fipy import CellVariable
 from fipy.terms.diffusionTerm import DiffusionTerm
 from fipy.terms.implicitSourceTerm import ImplicitSourceTerm
 from fipy.terms.powerLawConvectionTerm import PowerLawConvectionTerm
+from fipy.terms.upwindConvectionTerm import UpwindConvectionTerm
 from fipy.terms.transientTerm import TransientTerm
 
 # import numpy as np
@@ -290,6 +291,10 @@ def _get_solver(mp: Any) -> Any:
                 solver_kwargs["iterations"] = mp.solver_max_iterations
 
             solver = LinearGMRESSolver(**solver_kwargs)
+        elif backend in ("PETScLUSolver", "LinearLUSolver_petsc"):
+            from fipy.solvers.petsc import LinearLUSolver
+
+            solver = LinearLUSolver(tolerance=tol)
         elif backend == "petscSolver":
             # this is currently not working
             from fipy.solvers.petsc import petscSolver
@@ -334,6 +339,9 @@ def _build_passive_eqs(
     else:
         phi_var = mp.phi
 
+    solid_scheme = getattr(mp, "solid_convection_term", "powerlaw")
+    enable_caching = getattr(mp, "enable_matrix_caching", False)
+
     for name in species_list_partial:
         var = getattr(c, name)
         props = bc_map[name]
@@ -351,7 +359,11 @@ def _build_passive_eqs(
         u_var = CellVariable(mesh=mesh, value=vel, rank=1)
 
         # Terms with conservative phi handling
-        conv_term = PowerLawConvectionTerm(coeff=eff_phi * u_var, var=var)
+        if solid_scheme == "upwind" and props["type"] != "dissolved":
+            conv_term = UpwindConvectionTerm(coeff=eff_phi * u_var, var=var)
+        else:
+            conv_term = PowerLawConvectionTerm(coeff=eff_phi * u_var, var=var)
+
         diff_term = DiffusionTerm(
             coeff=eff_phi * CellVariable(mesh=mesh, value=D_total), var=var
         )
@@ -362,6 +374,13 @@ def _build_passive_eqs(
             irr_term = ImplicitSourceTerm(
                 coeff=eff_phi * CellVariable(mesh=mesh, value=-D_mol.D_irr), var=var
             ) + eff_phi * CellVariable(mesh=mesh, value=D_mol.D_irr * props["top"])
+
+        if enable_caching:
+            # Pre-compute and freeze convection face weights to bypass redundant Peclet loops
+            cached_weight = conv_term._getWeight(var, None, None)
+            conv_term._getWeight = lambda v=var, tg=None, dg=None, w=cached_weight: w
+            # Pre-compute diffusion coeffDict
+            diff_term._calcCoeffDict(var)
 
         # Passive equation: Transient + Convection - Diffusion - Irrigation
         passive_eqs[name] = (
@@ -415,7 +434,7 @@ def _setup_static_coupled_equation(
         cross_term = 0.0
         for source_name, _ in cross_list:
             v_cross = CellVariable(mesh=mesh, value=0.0)
-            CROSS_vars[name].append(v_cross)
+            CROSS_vars[name].append((v_cross, source_name))
             cross_term += ImplicitSourceTerm(coeff=v_cross, var=c[source_name])
 
         lhs_reaction = ImplicitSourceTerm(coeff=LHS_vars[name], var=s_obj["var"])
@@ -501,7 +520,7 @@ def _update_static_coefficients(
         RHS_vars[s].setValue(get_val(f_res.raw_RHS[s]))
         # Update off-diagonal couplings
         cross_list = f_res.raw_CROSS[s]
-        for v_cross, (source_name, coeff) in zip(CROSS_vars[s], cross_list):
+        for (v_cross, _), (source_name, coeff) in zip(CROSS_vars[s], cross_list):
             v_cross.setValue(get_val(coeff))
     RATES_numpy = {key: get_val(val) for key, val in RATES.items()}
     return RATES_numpy
@@ -612,6 +631,36 @@ def _compute_inner_residual(
         if err_ratio > max_err_ratio:
             max_err_ratio = err_ratio
     return max_err_ratio
+
+
+def _check_cross_coupling_dominance(
+    CROSS_vars: Dict[str, List[Tuple[Any, str]]],
+    c: Any,
+    current_dt: float,
+    species_struct: List[Dict[str, Any]],
+    threshold: float = 0.05,
+    atol: float = 1e-6,
+) -> bool:
+    """Check if off-diagonal cross-coupling fluxes are significant relative to species inventory.
+
+    Returns True if cross-couplings are dominant (>= threshold), requiring at least 2 Picard sweeps.
+    """
+    for s_obj in species_struct:
+        name = s_obj["name"]
+        cross_list = CROSS_vars.get(name, [])
+        if not cross_list:
+            continue
+        c_target = np.abs(s_obj["var"].value)
+        total_cross_flux = np.zeros_like(c_target)
+        for v_cross, source_name in cross_list:
+            source_var = getattr(c, source_name)
+            c_source = np.abs(source_var.value if hasattr(source_var, "value") else source_var)
+            coeff_val = np.abs(v_cross.value if hasattr(v_cross, "value") else v_cross)
+            total_cross_flux += coeff_val * c_source
+        rel_change = (total_cross_flux * current_dt) / (c_target + atol)
+        if np.max(rel_change) > threshold:
+            return True
+    return False
 
 
 def _validate_rates(
@@ -1014,6 +1063,7 @@ def run_non_steady_state_solver_coupled(
     velocity_ema_alpha = float(getattr(mp, "velocity_ema_alpha", 0.2))
     enable_single_sweep_exit = getattr(mp, "enable_single_sweep_exit", False)
     sweep1_exit_tol = float(getattr(mp, "sweep1_exit_tol", 3.0))
+    max_cross_coupling_ratio = float(getattr(mp, "max_cross_coupling_ratio", 0.05))
 
     # --- Near-Convergence Rate Oscillation Safeguard Settings ---
     near_conv_rate_species = getattr(mp, "near_conv_rate_species", ["FeS"])
@@ -1061,6 +1111,15 @@ def run_non_steady_state_solver_coupled(
     print(
         f"Starting Adaptive ADR Solver. dt_init: {get_time_units(dt_controller.dt):.2f~P}"
     )
+
+    if getattr(mp, "enable_matrix_caching", False):
+        msg_cache = "  [Solver] Transport operator caching enabled (stationary D, phi, w)."
+        _log(msg_cache)
+        print(msg_cache)
+    if getattr(mp, "solid_convection_term", "powerlaw") == "upwind":
+        msg_conv = "  [Solver] Upwind convection enabled for solid species."
+        _log(msg_conv)
+        print(msg_conv)
 
     # Build the transport backbone
     species_struct, passive_eqs = _build_passive_eqs(
@@ -1178,9 +1237,19 @@ def run_non_steady_state_solver_coupled(
 
                             # Check inner convergence
                             if last_inner_err <= 1.0:
-                                inner_converged = True
-                                last_inner_sweeps = inner_iter
-                                break
+                                cross_dominated = False
+                                if inner_iter == 1 and max_cross_coupling_ratio > 0.0:
+                                    cross_dominated = _check_cross_coupling_dominance(
+                                        CROSS_vars,
+                                        c,
+                                        current_dt,
+                                        species_struct,
+                                        threshold=max_cross_coupling_ratio,
+                                    )
+                                if not cross_dominated:
+                                    inner_converged = True
+                                    last_inner_sweeps = inner_iter
+                                    break
 
                             # Check 1-sweep early exit during smooth evolution
                             if (
@@ -1189,9 +1258,19 @@ def run_non_steady_state_solver_coupled(
                                 and not prev_was_near_converged
                                 and last_inner_err <= sweep1_exit_tol
                             ):
-                                inner_converged = True
-                                last_inner_sweeps = 1
-                                break
+                                cross_dominated = False
+                                if max_cross_coupling_ratio > 0.0:
+                                    cross_dominated = _check_cross_coupling_dominance(
+                                        CROSS_vars,
+                                        c,
+                                        current_dt,
+                                        species_struct,
+                                        threshold=max_cross_coupling_ratio,
+                                    )
+                                if not cross_dominated:
+                                    inner_converged = True
+                                    last_inner_sweeps = 1
+                                    break
 
                             # Early bail-out check: detect hopeless or diverging iterations early
                             if enable_early_bailout and inner_iter >= early_bailout_iter:
