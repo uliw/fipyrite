@@ -1393,10 +1393,12 @@ def calculate_fractionated_coeff_32(coeff_total, c_total, c_32, alpha, eps=1e-20
     Calculate the fractionated isotope rate coefficient for 32S.
     """
     c_tot_np = np.asarray(c_total)
-    # Neglect isotope fractionation effects below 1 umol/L (1e-3 mmol/L)
-    alpha_eff = np.where(c_tot_np > 1e-3, alpha, 1.0)
-
-    ratio_32 = np.where(c_tot_np > 1e-6, np.asarray(c_32) / (c_tot_np + 1e-30), 0.95770423)
+    c_32_np = np.asarray(c_32)
+    valid = c_tot_np > 1e-12
+    alpha_eff = np.where(valid, alpha, 1.0)
+    safe_tot = np.where(valid, c_tot_np, 1.0)
+    safe_32 = np.where(valid, c_32_np, 1.0)
+    ratio_32 = np.where(valid, safe_32 / safe_tot, 1.0)
     ratio_32 = np.clip(ratio_32, 0.5, 1.5)
     denom_ratio = 1.0 + (alpha_eff - 1.0) * ratio_32
     return coeff_total * alpha_eff / denom_ratio
