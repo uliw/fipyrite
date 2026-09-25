@@ -998,6 +998,24 @@ def run_non_steady_state_solver_coupled(
     2. Runs a time loop where reaction terms are updated and solved.
     3. Adapts the time step using a PID-controlled logic.
     """
+    if getattr(mp, "use_direct_assembly", False):
+        from .direct_assembled_solver import run_non_steady_state_solver_direct
+
+        return run_non_steady_state_solver_direct(
+            mp=mp,
+            c=c,
+            species_list_full=species_list_full,
+            species_list_partial=species_list_partial,
+            k=k,
+            diagenetic_reactions=diagenetic_reactions,
+            equilibrium_reactions=equilibrium_reactions,
+            mesh=mesh,
+            D_mol=D_mol,
+            bc_map=bc_map,
+            z=z,
+            plot_queue=plot_queue,
+        )
+
     from .diff_lib import get_delta, get_total_delta, save_state
 
     start_wall = time.time()
