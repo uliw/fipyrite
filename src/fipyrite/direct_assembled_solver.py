@@ -59,6 +59,8 @@ def build_native_1d_transport_stencil(
 
     d_centers = z[1:] - z[:-1]
     D_cell_arr = np.asarray(D_cell)
+    if D_cell_arr.ndim == 0:
+        D_cell_arr = np.full(N, float(D_cell_arr), dtype=np.float64)
     # Face diffusion: distance-weighted harmonic mean
     D_face = 2.0 / (1.0 / np.maximum(D_cell_arr[:-1], 1e-30) + 1.0 / np.maximum(D_cell_arr[1:], 1e-30))
     diff_cond = (eff_phi_face * D_face) / d_centers
