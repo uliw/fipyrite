@@ -31,15 +31,7 @@ def _compress_log_file(log_path: str) -> Optional[str]:
         return None
 
 
-from fipy import CellVariable
-from fipy.terms.diffusionTerm import DiffusionTerm
-from fipy.terms.implicitSourceTerm import ImplicitSourceTerm
-from fipy.terms.powerLawConvectionTerm import PowerLawConvectionTerm
-from fipy.terms.upwindConvectionTerm import UpwindConvectionTerm
-from fipy.terms.transientTerm import TransientTerm
-
-# import numpy as np
-from fipy.tools import numerix as np
+import numpy as np
 
 from .diff_lib import (
     get_time_units,
@@ -331,6 +323,13 @@ def _build_passive_eqs(
     species_struct = []
     passive_eqs = {}
 
+    from fipy import CellVariable
+    from fipy.terms.diffusionTerm import DiffusionTerm
+    from fipy.terms.implicitSourceTerm import ImplicitSourceTerm
+    from fipy.terms.powerLawConvectionTerm import PowerLawConvectionTerm
+    from fipy.terms.upwindConvectionTerm import UpwindConvectionTerm
+    from fipy.terms.transientTerm import TransientTerm
+
     # Ensure mp.phi is a CellVariable even if provided as a float
     # We create it once outside the loop to avoid recreating it for each species
     if not isinstance(mp.phi, CellVariable):
@@ -400,11 +399,13 @@ def _setup_static_coupled_equation(
     diagenetic_reactions: Any,
     species_list_partial: List[str],
 ) -> Tuple[
-    Any, Dict[str, CellVariable], Dict[str, CellVariable], Dict[str, List[CellVariable]]
+    Any, Dict[str, Any], Dict[str, Any], Dict[str, List[Any]]
 ]:
     """
     Setup static coefficient variables and compile the coupled equation system once.
     """
+    from fipy import CellVariable
+    from fipy.terms.implicitSourceTerm import ImplicitSourceTerm
     from .diff_lib import data_container
 
     f_dummy = data_container()
@@ -450,9 +451,9 @@ def _update_static_coefficients(
     c: Any,
     k: Any,
     diagenetic_reactions: Any,
-    LHS_vars: Dict[str, CellVariable],
-    RHS_vars: Dict[str, CellVariable],
-    CROSS_vars: Dict[str, List[CellVariable]],
+    LHS_vars: Dict[str, Any],
+    RHS_vars: Dict[str, Any],
+    CROSS_vars: Dict[str, List[Any]],
     species_list_partial: List[str],
 ) -> Dict[str, np.ndarray]:
     """
