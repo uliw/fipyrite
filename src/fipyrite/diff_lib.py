@@ -27,12 +27,7 @@ These helpers are primarily intended for modelling isotope diffusion and fractio
 processes in geological simulations.
 """
 
-from concurrent.futures import ThreadPoolExecutor
-from typing import Union
-
-from fipy.tools import numerix as np
-
-_executor = None
+import numpy as np
 
 
 class data_container(dict):
@@ -76,41 +71,158 @@ class data_container(dict):
             )
 
 
+class FaceSelector:
+    """Mock for mesh.facesLeft and mesh.facesRight."""
+
+    def __init__(self, index: int, size: int):
+        self.value = np.zeros(size, dtype=bool)
+        self.value[index] = True
+
+
+class Mesh1D:
+    """Lightweight 1D non-uniform mesh replacing fipy.Grid1D."""
+
+    def __init__(self, dx):
+        self.dx = np.asarray(dx, dtype=np.float64)
+        self.cellVolumes = self.dx
+        self.numberOfCells = len(self.dx)
+        self.faceCoordinates = np.concatenate(([0.0], np.cumsum(self.dx)))
+        self.cellCenters = np.array([(self.faceCoordinates[:-1] + self.faceCoordinates[1:]) / 2.0])
+        self.faceCenters = np.array([self.faceCoordinates])
+        self._cellDistances = np.concatenate((
+            [self.dx[0] / 2.0],
+            (self.dx[:-1] + self.dx[1:]) / 2.0,
+            [self.dx[-1] / 2.0],
+        ))
+        self.facesLeft = FaceSelector(0, self.numberOfCells + 1)
+        self.facesRight = FaceSelector(self.numberOfCells, self.numberOfCells + 1)
+
+
 class ArrayProxy:
+    """Lightweight NumPy array wrapper mimicking FiPy CellVariable for rate evaluations."""
+
     def __init__(self, val):
-        self.value = val
+        self.value = np.asarray(val, dtype=np.float64)
+
     def __getattr__(self, name):
         return getattr(self.value, name)
+
     def __add__(self, other):
-        val = other.value if hasattr(other, 'value') else other
+        val = other.value if hasattr(other, "value") else other
         return ArrayProxy(self.value + val)
+
     def __radd__(self, other):
-        val = other.value if hasattr(other, 'value') else other
+        val = other.value if hasattr(other, "value") else other
         return ArrayProxy(val + self.value)
+
     def __sub__(self, other):
-        val = other.value if hasattr(other, 'value') else other
+        val = other.value if hasattr(other, "value") else other
         return ArrayProxy(self.value - val)
+
     def __rsub__(self, other):
-        val = other.value if hasattr(other, 'value') else other
+        val = other.value if hasattr(other, "value") else other
         return ArrayProxy(val - self.value)
+
     def __mul__(self, other):
-        val = other.value if hasattr(other, 'value') else other
+        val = other.value if hasattr(other, "value") else other
         return ArrayProxy(self.value * val)
+
     def __rmul__(self, other):
-        val = other.value if hasattr(other, 'value') else other
+        val = other.value if hasattr(other, "value") else other
         return ArrayProxy(val * self.value)
+
     def __truediv__(self, other):
-        val = other.value if hasattr(other, 'value') else other
+        val = other.value if hasattr(other, "value") else other
         return ArrayProxy(self.value / val)
+
     def __rtruediv__(self, other):
-        val = other.value if hasattr(other, 'value') else other
+        val = other.value if hasattr(other, "value") else other
         return ArrayProxy(val / self.value)
+
     def __pow__(self, power):
-        return ArrayProxy(self.value ** power)
+        return ArrayProxy(self.value**power)
+
     def __neg__(self):
         return ArrayProxy(-self.value)
+
+    def __pos__(self):
+        return self
+
+    def __abs__(self):
+        return ArrayProxy(abs(self.value))
+
+    def __array__(self, dtype=None):
+        return np.asarray(self.value, dtype=dtype)
+
     def __getitem__(self, idx):
         return self.value[idx]
+
+    def __setitem__(self, idx, val):
+        self.value[idx] = val
+
+    def __len__(self):
+        return len(self.value)
+
+
+class FaceValueProxy(ArrayProxy):
+    """Array proxy for face-centered fields supporting FaceSelector indexing."""
+
+    def __getitem__(self, idx):
+        if hasattr(idx, "value"):
+            idx = idx.value
+        return super().__getitem__(idx)
+
+
+class VariableArray(ArrayProxy):
+    """Lightweight NumPy array wrapper mimicking FiPy CellVariable for state & rates."""
+
+    def __init__(self, value=0.0, name="", mesh=None, hasOld=True, **kwargs):
+        val = kwargs.get("val", value)
+        val_arr = val.value if hasattr(val, "value") else val
+        if np.ndim(val_arr) == 0:
+            if mesh is not None:
+                n_cells = getattr(mesh, "numberOfCells", len(getattr(mesh, "dx", [])))
+                val_arr = np.full(n_cells, float(val_arr), dtype=np.float64)
+            else:
+                val_arr = np.array([float(val_arr)], dtype=np.float64)
+        super().__init__(val_arr)
+        self.name = name
+        self.mesh = mesh
+        self.hasOld = hasOld
+        self.old = ArrayProxy(self.value.copy())
+
+    def setValue(self, val, where=None):
+        if where is not None:
+            mask = where.value if hasattr(where, "value") else where
+            if isinstance(mask, np.ndarray) and mask.dtype == bool and len(mask) == len(self.value) + 1:
+                if mask[0]:
+                    self.value[0] = np.asarray(val)
+                if mask[-1]:
+                    self.value[-1] = np.asarray(val)
+            else:
+                self.value[mask] = np.asarray(val)
+        else:
+            self.value[:] = np.asarray(val)
+
+    def updateOld(self):
+        self.old.value[:] = self.value
+
+    @property
+    def faceValue(self):
+        if len(self.value) == 0:
+            return FaceValueProxy(self.value)
+        faces = np.empty(len(self.value) + 1, dtype=np.float64)
+        faces[0] = self.value[0]
+        faces[1:-1] = 0.5 * (self.value[:-1] + self.value[1:])
+        faces[-1] = self.value[-1]
+        return FaceValueProxy(faces)
+
+    @property
+    def faceGrad(self):
+        return self
+
+    def constrain(self, *args, **kwargs):
+        pass
 
 
 def diff_coeff(T, m0, m1, phi):
@@ -378,10 +490,6 @@ def make_grid(L, initial_spacing, max_spacing, r=1.05):
             mesh: A fipy.Grid1D object.
             z_centers: A numpy array of cell center coordinates.
     """
-    from fipy import Grid1D
-
-    #     import numpy as np
-
     if initial_spacing >= max_spacing:
         initial_spacing = max_spacing
 
@@ -407,8 +515,8 @@ def make_grid(L, initial_spacing, max_spacing, r=1.05):
     N = len(dx_array)
     print(f"Grid generated with {N} points.")
 
-    mesh = Grid1D(dx=dx_array)
-    z_centers = mesh.cellCenters[0].value
+    mesh = Mesh1D(dx=dx_array)
+    z_centers = mesh.cellCenters[0]
 
     return mesh, z_centers
 
@@ -860,10 +968,14 @@ def solid_conc_to_wt_percent_old(C_bulk, mw, d, phi):
     return wp
 
 
+_executor = None
+
+
 def _get_executor():
     """Create a module‑wide ThreadPoolExecutor on first use."""
     global _executor
     if _executor is None:
+        from concurrent.futures import ThreadPoolExecutor
         _executor = ThreadPoolExecutor(max_workers=1)
     return _executor
 
@@ -1021,11 +1133,6 @@ def make_grid2(
             mesh: A fipy.Grid1D object.
             z_centers: A numpy array of cell center coordinates.
     """
-    from fipy import Grid1D
-
-    # import numpy as np
-    from fipy.tools import numerix as np
-
     rz_start, rz_end = reaction_zone
     dx_list = []
     current_z = 0
@@ -1066,8 +1173,8 @@ def make_grid2(
     N = len(dx_array)
     print(f"Grid generated with {N} points.")
 
-    mesh = Grid1D(dx=dx_array)
-    z_centers = mesh.cellCenters[0].value
+    mesh = Mesh1D(dx=dx_array)
+    z_centers = mesh.cellCenters[0]
 
     return mesh, z_centers
 
