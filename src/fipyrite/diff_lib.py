@@ -80,9 +80,20 @@ class FaceSelector:
 
 
 class Mesh1D:
-    """Lightweight 1D non-uniform mesh replacing fipy.Grid1D."""
+    """Lightweight 1D non-uniform finite-volume mesh."""
 
-    def __init__(self, dx):
+    def __init__(self, dx=None, nx=None, Lx=None):
+        if dx is None:
+            if nx is not None:
+                cell_dx = (Lx / nx) if Lx is not None else 1.0
+                dx = np.full(nx, cell_dx, dtype=np.float64)
+            else:
+                dx = np.array([1.0], dtype=np.float64)
+        elif np.ndim(dx) == 0:
+            if nx is not None:
+                dx = np.full(nx, float(dx), dtype=np.float64)
+            else:
+                dx = np.array([float(dx)], dtype=np.float64)
         self.dx = np.asarray(dx, dtype=np.float64)
         self.cellVolumes = self.dx
         self.numberOfCells = len(self.dx)
@@ -487,7 +498,7 @@ def make_grid(L, initial_spacing, max_spacing, r=1.05):
     Returns
     -------
         tuple (mesh, z_centers)
-            mesh: A fipy.Grid1D object.
+            mesh: A Mesh1D object.
             z_centers: A numpy array of cell center coordinates.
     """
     if initial_spacing >= max_spacing:
@@ -1130,7 +1141,7 @@ def make_grid2(
     Returns:
     -------
         tuple (mesh, z_centers)
-            mesh: A fipy.Grid1D object.
+            mesh: A Mesh1D object.
             z_centers: A numpy array of cell center coordinates.
     """
     rz_start, rz_end = reaction_zone
