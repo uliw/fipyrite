@@ -57,10 +57,20 @@ class LivePlotter:
     def stop(self) -> None:
         """Stop the background plotting process."""
         if self._process and self._process.is_alive():
-            self._queue.put(None)  # Sentinel for exit
-            self._process.join(timeout=10)
+            try:
+                self._queue.put(None, timeout=1)  # Sentinel for exit
+            except Exception:
+                pass
+            self._process.join(timeout=15)
             if self._process.is_alive():
                 self._process.terminate()
+                self._process.join(timeout=2)
+        # Prevent Python atexit from hanging on queue flush thread
+        try:
+            self._queue.cancel_join_thread()
+            self._queue.close()
+        except Exception:
+            pass
 
     def _run_plot_loop(self) -> None:
         """Internal loop running in the background process."""
@@ -81,6 +91,10 @@ class LivePlotter:
         if hasattr(signal, "SIGINT"):
             signal.signal(signal.SIGINT, signal.SIG_IGN)
 
+        # Handle SIGTERM cleanly to avoid PETSc signal handler dumping MPI_Abort
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
+
         # Reset signal handlers to default to avoid PETSc's SIGPIPE handling
         if hasattr(signal, "SIGPIPE"):
             signal.signal(signal.SIGPIPE, signal.SIG_DFL)
@@ -93,6 +107,10 @@ class LivePlotter:
             matplotlib.use("Agg")
         import fipyrite.plot_data_new as plot_data_new
         from matplotlib.animation import FFMpegWriter
+
+        # Re-assert clean SIGTERM handler after imports in case libraries modified it
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
 
         print(
             f"[LivePlotter] Child process starting. video_path={self.video_path}",
