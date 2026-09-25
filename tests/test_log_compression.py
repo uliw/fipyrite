@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch
 
-from fipy import CellVariable, Grid1D
+from fipyrite.diff_lib import VariableArray as CellVariable, Mesh1D as Grid1D
 from fipyrite.diff_lib import data_container
 from fipyrite.solver_calls import _compress_log_file, run_non_steady_state_solver_coupled
 
@@ -65,11 +65,7 @@ class MockD:
         self.D_irr = 0.0
 
 
-@patch("fipyrite.solver_calls._setup_static_coupled_equation")
-@patch("fipyrite.solver_calls._update_static_coefficients")
-@patch("fipyrite.solver_calls.save_data")
-@patch("fipyrite.solver_calls.save_state")
-def test_solver_compresses_log_on_completion(mock_save_state, mock_save_data, mock_update_coeffs, mock_setup_eq):
+def test_solver_compresses_log_on_completion():
     """Test that solver run automatically closes and compresses its log file to .log.gz."""
     with tempfile.TemporaryDirectory() as tmpdir:
         plot_name = os.path.join(tmpdir, "my_sim")
@@ -84,14 +80,15 @@ def test_solver_compresses_log_on_completion(mock_save_state, mock_save_data, mo
         k = data_container()
         D_mol = MockD()
         bc_map = {"FeS": {"type": "solid", "top": 0.0}}
-        z = np.array([0.0, 1.0, 2.0, 3.0])
+        z = mesh.cellCenters[0]
         
-        mock_coupled_eq = MagicMock()
-        mock_setup_eq.return_value = (mock_coupled_eq, {}, {}, {})
-        mock_update_coeffs.return_value = {}
+        def dummy_rxn(mp, c, k, f=None):
+            return data_container({"raw_LHS": {}, "raw_RHS": {}, "raw_CROSS": {}}), {}
+        def dummy_eq(mp, c, k, f, rates, dt):
+            return f, rates
         
         run_non_steady_state_solver_coupled(
-            mp, c, ["FeS"], ["FeS"], k, MagicMock(), MagicMock(), mesh, D_mol, bc_map, z
+            mp, c, ["FeS"], ["FeS"], k, dummy_rxn, dummy_eq, mesh, D_mol, bc_map, z
         )
         
         assert not os.path.exists(log_path)

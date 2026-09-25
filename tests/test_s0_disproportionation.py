@@ -3,9 +3,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-# Ensure experiments and package directories are in sys.path
-experiments_dir = Path(__file__).resolve().parents[1] / "experiments"
-src_dir = Path(__file__).resolve().parents[1] / "src"
+repo_root = Path(__file__).resolve().parents[1]
+experiments_dir = repo_root / "nbk" / "experiments"
+if not experiments_dir.exists():
+    experiments_dir = repo_root / "experiments"
+src_dir = repo_root / "src"
 for p in [str(experiments_dir), str(src_dir)]:
     if p not in sys.path:
         sys.path.insert(0, p)

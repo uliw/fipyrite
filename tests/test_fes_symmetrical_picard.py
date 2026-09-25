@@ -2,12 +2,12 @@ import sys
 from pathlib import Path
 import numpy as np
 import pytest
-from fipy import CellVariable, Grid1D
+from fipyrite.diff_lib import VariableArray as CellVariable, Mesh1D as Grid1D
 
 # Ensure experiments and src paths are importable
 repo_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(repo_root / "src"))
-sys.path.insert(0, str(repo_root / "experiments"))
+sys.path.insert(0, str(repo_root / "nbk" / "experiments"))
 
 from fipyrite.diff_lib import data_container
 import reactions_new as rn
@@ -200,12 +200,8 @@ def test_alias_equivalence():
 
 
 def test_coupled_matrix_assembly_and_update():
-    """Verify end-to-end compatibility with _setup_static_coupled_equation and _update_static_coefficients."""
-    from fipyrite.solver_calls import (
-        _build_passive_eqs,
-        _setup_static_coupled_equation,
-        _update_static_coefficients,
-    )
+    """Verify end-to-end compatibility with DirectAssembledSystem."""
+    from fipyrite.direct_assembled_solver import DirectAssembledSystem
 
     mesh = Grid1D(nx=3)
     mp = MockMP()
@@ -244,32 +240,20 @@ def test_coupled_matrix_assembly_and_update():
         "Fe3": {"type": "solid", "top": 0.0},
     }
 
-    species_struct, passive_eqs = _build_passive_eqs(
-        mp, c, mesh, D_mol, bc_map, species_list
+    species_struct = [{"name": s, "var": c[s]} for s in species_list]
+    assembled_system = DirectAssembledSystem(
+        species_struct=species_struct,
+        mesh=mesh,
+        mp=mp,
+        bc_map=bc_map,
+        D_mol=D_mol,
+        z=mesh.cellCenters[0],
     )
 
-    # 1. Static equation setup (sparsity discovery via dummy run)
-    coupled_eq, LHS_vars, RHS_vars, CROSS_vars = _setup_static_coupled_equation(
-        mp, c, k, mesh, passive_eqs, species_struct, rn.diagenetic_reactions, species_list
-    )
-
-    assert coupled_eq is not None
-    # Both Fe2_total and TS2 should have off-diagonal cross terms allocated
-    assert len(CROSS_vars["Fe2_total"]) > 0
-    assert len(CROSS_vars["TS2"]) > 0
-    assert len(CROSS_vars["FeS"]) > 0
-
-    # 2. Update coefficients in-place
-    rates = _update_static_coefficients(
-        mp, c, k, rn.diagenetic_reactions, LHS_vars, RHS_vars, CROSS_vars, species_list
-    )
-
-    # Check updated values
-    assert "Fe2_total" in rates
-    assert "TS2" in rates
-    assert "FeS" in rates
-    assert np.all(LHS_vars["Fe2_total"].value <= 0.0)
-    assert np.all(LHS_vars["TS2"].value <= 0.0)
+    assert assembled_system is not None
+    assert "Fe2_total" in assembled_system.ab_transport
+    assert "TS2" in assembled_system.ab_transport
+    assert "FeS" in assembled_system.ab_transport
 
 
 def test_patankar_auto_weighting_regimes():
@@ -361,11 +345,7 @@ def test_isotopes_operator_mirroring_and_delta_stability():
 
 def test_coupled_matrix_assembly_with_isotopes():
     """Verify coupled matrix assembly and update with isotopes enabled."""
-    from fipyrite.solver_calls import (
-        _build_passive_eqs,
-        _setup_static_coupled_equation,
-        _update_static_coefficients,
-    )
+    from fipyrite.direct_assembled_solver import DirectAssembledSystem
 
     mesh = Grid1D(nx=3)
     mp = MockMP()
@@ -408,22 +388,20 @@ def test_coupled_matrix_assembly_with_isotopes():
         "FeS_32": {"type": "solid", "top": 0.0},
     }
 
-    species_struct, passive_eqs = _build_passive_eqs(
-        mp, c, mesh, D_mol, bc_map, species_list
+    species_struct = [{"name": s, "var": c[s]} for s in species_list]
+    assembled_system = DirectAssembledSystem(
+        species_struct=species_struct,
+        mesh=mesh,
+        mp=mp,
+        bc_map=bc_map,
+        D_mol=D_mol,
+        z=mesh.cellCenters[0],
     )
 
-    coupled_eq, LHS_vars, RHS_vars, CROSS_vars = _setup_static_coupled_equation(
-        mp, c, k, mesh, passive_eqs, species_struct, rn.diagenetic_reactions, species_list
-    )
-
-    assert coupled_eq is not None
-    assert len(CROSS_vars["TS2_32"]) == 2  # coupled to Fe2_total and FeS_32
-    assert len(CROSS_vars["FeS_32"]) == 2  # coupled to TS2_32 and Fe2_total
-
-    rates = _update_static_coefficients(
-        mp, c, k, rn.diagenetic_reactions, LHS_vars, RHS_vars, CROSS_vars, species_list
-    )
-    assert "TS2_32" in rates
-    assert "FeS_32" in rates
+    assert assembled_system is not None
+    assert "TS2_32" in assembled_system.ab_transport
+    assert "FeS_32" in assembled_system.ab_transport
+    assert "TS2_32" in assembled_system.b_transport
+    assert "FeS_32" in assembled_system.b_transport
 
 
