@@ -18,8 +18,10 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Callable
 import numpy as np
 from scipy.linalg import solve_banded
 
-from fipy import CellVariable
 from .diff_lib import (
+    ArrayProxy,
+    Mesh1D,
+    VariableArray,
     data_container,
     get_time_units,
     save_data,
@@ -28,168 +30,163 @@ from .diff_lib import (
 )
 from .live_plot_lib import write_to_queue_async
 
-if TYPE_CHECKING:
-    from fipy.meshes.mesh import Mesh
 
+def build_native_1d_transport_stencil(
+    z: np.ndarray,
+    dx: np.ndarray,
+    phi: Any,
+    D_cell: np.ndarray,
+    w: float,
+    bc_props: Dict[str, Any],
+    D_irr: Optional[np.ndarray] = None,
+    solid_scheme: str = "powerlaw",
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Constructs the exact 1D tridiagonal finite-volume transport stencil in pure NumPy.
 
-class ArrayProxy:
-    """Lightweight NumPy array wrapper mimicking FiPy CellVariable for rate evaluations."""
+    Returns:
+        ab: shape (3, N) banded matrix (row 0: upper, row 1: diag, row 2: lower)
+        b_transport: shape (N,) boundary flux vector
+    """
+    N = len(z)
+    is_dissolved = (bc_props.get("type", "dissolved") == "dissolved")
+    eff_phi_val = np.asarray(phi.value if hasattr(phi, "value") else phi)
+    eff_phi = eff_phi_val if is_dissolved else (1.0 - eff_phi_val)
+    if eff_phi.ndim == 0:
+        eff_phi_arr = np.full(N, float(eff_phi), dtype=np.float64)
+    else:
+        eff_phi_arr = np.asarray(eff_phi, dtype=np.float64)
+    eff_phi_face = (eff_phi_arr[:-1] + eff_phi_arr[1:]) / 2.0
 
-    def __init__(self, val: Any):
-        self.value = val
+    d_centers = z[1:] - z[:-1]
+    D_cell_arr = np.asarray(D_cell)
+    # Face diffusion: distance-weighted harmonic mean
+    D_face = 2.0 / (1.0 / np.maximum(D_cell_arr[:-1], 1e-30) + 1.0 / np.maximum(D_cell_arr[1:], 1e-30))
+    diff_cond = (eff_phi_face * D_face) / d_centers
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.value, name)
+    # Face convection
+    F_face = eff_phi_face * w
+    if solid_scheme == "upwind" and not is_dissolved:
+        a_E = diff_cond + np.maximum(F_face, 0.0)
+        a_W = diff_cond + np.maximum(-F_face, 0.0)
+    else:
+        Pe = F_face / np.maximum(diff_cond, 1e-30)
+        A_pe = np.maximum(0.0, (1.0 - 0.1 * np.abs(Pe))**5)
+        a_E = diff_cond * A_pe + np.maximum(F_face, 0.0)
+        a_W = diff_cond * A_pe + np.maximum(-F_face, 0.0)
 
-    def __add__(self, other: Any) -> ArrayProxy:
-        val = other.value if hasattr(other, "value") else other
-        return ArrayProxy(self.value + val)
+    ab = np.zeros((3, N), dtype=np.float64)
+    b_transport = np.zeros(N, dtype=np.float64)
 
-    def __radd__(self, other: Any) -> ArrayProxy:
-        val = other.value if hasattr(other, "value") else other
-        return ArrayProxy(val + self.value)
+    # Upper diagonal: ab[0, 1:] -> coeff of C_{i+1} in equation i
+    ab[0, 1:] = -a_W
+    # Lower diagonal: ab[2, :-1] -> coeff of C_{i-1} in equation i
+    ab[2, :-1] = -a_E
 
-    def __sub__(self, other: Any) -> ArrayProxy:
-        val = other.value if hasattr(other, "value") else other
-        return ArrayProxy(self.value - val)
+    # Main diagonal interior:
+    ab[1, 0] = a_E[0]
+    ab[1, 1:-1] = a_W[:-1] + a_E[1:]
+    ab[1, -1] = a_W[-1]
 
-    def __rsub__(self, other: Any) -> ArrayProxy:
-        val = other.value if hasattr(other, "value") else other
-        return ArrayProxy(val - self.value)
+    # Left boundary (z=0):
+    top_val = bc_props.get("top", 0.0)
+    d_top = z[0]  # distance from left face (z=0) to cell 0 center
+    phi_top = eff_phi_arr[0]
 
-    def __mul__(self, other: Any) -> ArrayProxy:
-        val = other.value if hasattr(other, "value") else other
-        return ArrayProxy(self.value * val)
+    if is_dissolved:
+        # Dirichlet BC: C(0) = top_val
+        D_top = (phi_top * D_cell_arr[0]) / d_top
+        F_top = phi_top * w
+        Pe_top = F_top / np.maximum(D_top, 1e-30)
+        A_top = np.maximum(0.0, (1.0 - 0.1 * np.abs(Pe_top))**5)
+        a_in_diag = D_top * A_top + np.maximum(-F_top, 0.0)
+        a_in_rhs = D_top * A_top + np.maximum(F_top, 0.0)
+        ab[1, 0] += a_in_diag
+        b_transport[0] += a_in_rhs * top_val
+    else:
+        # Robin BC: prescribed solid influx J_in = top_val (in bulk mol/(m^2*s))
+        b_transport[0] += top_val
 
-    def __rmul__(self, other: Any) -> ArrayProxy:
-        val = other.value if hasattr(other, "value") else other
-        return ArrayProxy(val * self.value)
+    # Right boundary (z=L): Neumann zero-gradient (advection carries mass out)
+    ab[1, -1] += eff_phi_arr[-1] * w
 
-    def __truediv__(self, other: Any) -> ArrayProxy:
-        val = other.value if hasattr(other, "value") else other
-        return ArrayProxy(self.value / val)
+    # Bio-irrigation (non-local exchange for dissolved species)
+    if is_dissolved and D_irr is not None:
+        irr_arr = np.asarray(D_irr)
+        if np.any(irr_arr > 0):
+            irr_coeff = eff_phi_arr * irr_arr * dx
+            ab[1, :] += irr_coeff
+            b_transport += irr_coeff * top_val
 
-    def __rtruediv__(self, other: Any) -> ArrayProxy:
-        val = other.value if hasattr(other, "value") else other
-        return ArrayProxy(val / self.value)
-
-    def __pow__(self, power: Any) -> ArrayProxy:
-        return ArrayProxy(self.value**power)
-
-    def __neg__(self) -> ArrayProxy:
-        return ArrayProxy(-self.value)
-
-    def __pos__(self) -> ArrayProxy:
-        return self
-
-    def __abs__(self) -> ArrayProxy:
-        return ArrayProxy(abs(self.value))
-
-    def __getitem__(self, idx: Any) -> Any:
-        return self.value[idx]
+    return ab, b_transport
 
 
 class DirectAssembledSystem:
-    """Pre-extracts and manages the static tridiagonal transport stencils
+    """Manages the 1D tridiagonal transport stencils for all species in pure NumPy,
 
-    for all species, performing in-place assembly and LAPACK solve on every sweep.
+    performing in-place assembly and LAPACK solve on every sweep.
     """
 
     def __init__(
         self,
         species_struct: List[Dict[str, Any]],
-        passive_eqs: Dict[str, Any],
-        mesh: Mesh,
+        mesh: Any,
         mp: Any,
         bc_map: Optional[Dict[str, Any]] = None,
+        D_mol: Optional[Any] = None,
+        z: Optional[np.ndarray] = None,
+        passive_eqs: Optional[Dict[str, Any]] = None,
     ):
         self.mesh = mesh
         self.mp = mp
         self.species_struct = species_struct
-        self.num_cells = mesh.numberOfCells
+        self.num_cells = getattr(mesh, "numberOfCells", len(mesh.cellVolumes))
         self.vol = np.asarray(mesh.cellVolumes)
+        self.z = z if z is not None else np.asarray(mesh.cellCenters[0])
 
-        # Storage per species:
-        # ab_transport: shape (3, N) -> row 0: upper diagonal, row 1: main diagonal, row 2: lower diagonal
-        # b_transport: shape (N,)
-        # eff_phi_vol: shape (N,) -> eff_phi * cellVolumes
         self.species_names = [s["name"] for s in species_struct]
         self.ab_transport: Dict[str, np.ndarray] = {}
         self.b_transport: Dict[str, np.ndarray] = {}
         self.eff_phi_vol: Dict[str, np.ndarray] = {}
 
-        # Default matrix class from FiPy for extraction
-        from fipy.solvers import DefaultSolver
-
-        matrixClass = DefaultSolver()._matrixClass
-
-        ref_dt = 1.0
         phi_val = np.asarray(mp.phi.value if hasattr(mp.phi, "value") else mp.phi)
+        solid_scheme = getattr(mp, "solid_convection_term", "powerlaw")
 
         for s_obj in species_struct:
             name = s_obj["name"]
-            var = s_obj["var"]
-            eq = passive_eqs[name]
             props = bc_map.get(name, {}) if bc_map is not None else {}
 
             is_diss = (props.get("type", "dissolved") == "dissolved")
             eff_phi_val = phi_val if is_diss else (1.0 - phi_val)
             eff_phi_v = eff_phi_val * self.vol
             self.eff_phi_vol[name] = eff_phi_v
-            transient_ref_diag = eff_phi_v / ref_dt
 
-            # Save original variable state
-            orig_val = np.asarray(var.value).copy()
-            orig_old = (
-                np.asarray(var.old.value).copy()
-                if hasattr(var, "old")
-                else orig_val.copy()
+            # Effective diffusion coefficient
+            D_eff = s_obj.get("D_total", None)
+            if D_eff is None:
+                D_mol_val = getattr(D_mol, name, 0.0) if D_mol is not None else 0.0
+                D_bio_val = getattr(D_mol, "D_bio", 0.0) if D_mol is not None else 0.0
+                D_eff = np.maximum(D_mol_val + D_bio_val, 1e-20)
+
+            # Advection velocity
+            w_val = getattr(mp, "w", 0.0)
+            if is_diss:
+                w_val -= getattr(mp, "advection", 0.0)
+
+            # Bio-irrigation (dissolved only)
+            D_irr_val = getattr(D_mol, "D_irr", None) if (is_diss and D_mol is not None) else None
+
+            ab, b_t = build_native_1d_transport_stencil(
+                z=self.z,
+                dx=self.vol,
+                phi=phi_val,
+                D_cell=D_eff,
+                w=w_val,
+                bc_props=props,
+                D_irr=D_irr_val,
+                solid_scheme=solid_scheme,
             )
-
-            # 1. Build reference linear system at var = 0, old = 0
-            # With old=0, the TransientTerm contribution is identically zero,
-            # so rhs_np0 isolates the spatial boundary influx (Dirichlet or Robin J_in).
-            var.setValue(0.0)
-            if hasattr(var, "old"):
-                var.old.setValue(0.0)
-            _, mat_ref0, rhs_ref0 = eq._buildAndAddMatrices(
-                var, matrixClass, dt=ref_dt
-            )
-
-            # 2. Robin boundary condition sensitivity check at cell 0:
-            # For particulate species with a Robin flux BC (w*C_face - J_solid)/D,
-            # FiPy evaluates the (1-phi)*w*C_face term in the RHS at each sweep.
-            # Measuring d(rhs)/d(var[0]) allows moving this term directly to the matrix diagonal!
-            v_test = np.zeros(self.num_cells)
-            v_test[0] = 1.0
-            var.setValue(v_test)
-            _, _, rhs_ref1 = eq._buildAndAddMatrices(
-                var, matrixClass, dt=ref_dt
-            )
-
-            # Restore original variable state
-            var.setValue(orig_val)
-            if hasattr(var, "old"):
-                var.old.setValue(orig_old)
-
-            mat_np = mat_ref0.numpyArray
-            rhs_np0 = np.asarray(rhs_ref0)
-            gamma_robin = float(rhs_np0[0] - np.asarray(rhs_ref1)[0])
-
-            # Extract transport matrix A_transport and rhs vector b_transport
-            diag_transport = np.diag(mat_np) - transient_ref_diag
-            diag_transport[0] += gamma_robin
-            upper_transport = np.diag(mat_np, k=1)
-            lower_transport = np.diag(mat_np, k=-1)
-
-            # Format for scipy.linalg.solve_banded: shape (3, N)
-            ab = np.zeros((3, self.num_cells), dtype=np.float64)
-            ab[0, 1:] = upper_transport
-            ab[1, :] = diag_transport
-            ab[2, :-1] = lower_transport
             self.ab_transport[name] = ab
-
-            self.b_transport[name] = rhs_np0
+            self.b_transport[name] = b_t
 
     def sweep(
         self,
@@ -265,7 +262,6 @@ def run_non_steady_state_solver_direct(
     """Clean, standalone direct-assembled driver for the coupled reactive-transport model."""
     from .solver_calls import (
         AdaptiveDT,
-        _build_passive_eqs,
         _compute_inner_residual,
         _format_wall_time,
         _format_sim_speed,
@@ -316,14 +312,15 @@ def run_non_steady_state_solver_direct(
     _log(msg_info)
     print(msg_info)
 
-    # Build the transport backbone once
-    species_struct, passive_eqs = _build_passive_eqs(
-        mp, c, mesh, D_mol, bc_map, species_list_partial
-    )
-
-    # Initialize Direct Assembled System
+    # Build species structure and initialize Direct Assembled System
+    species_struct = [{"name": s, "var": getattr(c, s)} for s in species_list_partial]
     assembled_system = DirectAssembledSystem(
-        species_struct, passive_eqs, mesh, mp, bc_map=bc_map
+        species_struct=species_struct,
+        mesh=mesh,
+        mp=mp,
+        bc_map=bc_map,
+        D_mol=D_mol,
+        z=z,
     )
 
     # Inner sweeping parameters
