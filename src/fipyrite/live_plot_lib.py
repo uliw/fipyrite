@@ -15,8 +15,136 @@ if TYPE_CHECKING:
     import pathlib as pl
 
 
+def parse_time_to_seconds(val: Any) -> Optional[float]:
+    """
+    Parse a time expression into seconds (float).
+    Supports Pint Quantity, string expressions (e.g. '1 year', '10 days'),
+    numeric seconds (int, float), or None.
+    """
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    if hasattr(val, "to") and hasattr(val, "magnitude"):
+        return float(val.to("seconds").magnitude)
+    if isinstance(val, str):
+        import pint
+        ureg = pint.UnitRegistry()
+        return float(ureg.Quantity(val).to("seconds").magnitude)
+    return float(val)
+
+
+class BoundedVideoQueue:
+    """
+    A process-safe bounded queue with backpressure for video encoding.
+    Capacity defaults to maxsize=20.
+    When full (count >= maxsize), put() blocks until count <= resume_threshold
+    (defaults to 10, i.e. half empty).
+    """
+
+    def __init__(
+        self,
+        maxsize: int = 20,
+        resume_threshold: int = 10,
+        ctx: Optional[mp.context.BaseContext] = None,
+    ):
+        if ctx is None:
+            ctx = mp.get_context("spawn")
+        self.ctx = ctx
+        self.maxsize = maxsize
+        self.resume_threshold = resume_threshold
+        self._queue = ctx.Queue()
+        self._lock = ctx.Lock()
+        self._cond = ctx.Condition(self._lock)
+        self._count = ctx.Value("i", 0)
+        self._stop_event = ctx.Event()
+
+    def put(self, item: Any, block: bool = True, timeout: Optional[float] = None) -> bool:
+        """
+        Puts an item into the queue. If queue is full (>= maxsize), blocks
+        until occupancy drops to <= resume_threshold.
+        Sentinel item None bypasses occupancy check so shutdown never deadlocks.
+        """
+        if item is None:
+            self._queue.put(None)
+            return True
+
+        start_time = time.time()
+        with self._cond:
+            while self._count.value >= self.maxsize:
+                if self._stop_event.is_set():
+                    return False
+                if not block:
+                    raise queue.Full
+                if timeout is not None:
+                    remaining = timeout - (time.time() - start_time)
+                    if remaining <= 0:
+                        raise queue.Full
+                    wait_time = min(0.2, remaining)
+                else:
+                    wait_time = 0.2
+                self._cond.wait(timeout=wait_time)
+                if self._stop_event.is_set():
+                    return False
+
+            self._queue.put(item)
+            self._count.value += 1
+            return True
+
+    def put_nowait(self, item: Any) -> bool:
+        return self.put(item, block=False)
+
+    def get(self, block: bool = True, timeout: Optional[float] = None) -> Any:
+        """
+        Gets an item from the queue and decrements occupancy.
+        If occupancy drops <= resume_threshold, wakes up waiting producers.
+        """
+        item = self._queue.get(block=block, timeout=timeout)
+        if item is not None:
+            with self._cond:
+                self._count.value = max(0, self._count.value - 1)
+                if self._count.value <= self.resume_threshold:
+                    self._cond.notify_all()
+        return item
+
+    def get_nowait(self) -> Any:
+        return self.get(block=False)
+
+    def qsize(self) -> int:
+        with self._lock:
+            return self._count.value
+
+    def empty(self) -> bool:
+        with self._lock:
+            return self._count.value == 0
+
+    def full(self) -> bool:
+        with self._lock:
+            return self._count.value >= self.maxsize
+
+    def stop(self) -> None:
+        """Signal queue to unblock any waiting producers."""
+        self._stop_event.set()
+        with self._cond:
+            self._cond.notify_all()
+
+    def cancel_join_thread(self) -> None:
+        try:
+            self._queue.cancel_join_thread()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        self.stop()
+        try:
+            self._queue.cancel_join_thread()
+            self._queue.close()
+        except Exception:
+            pass
+
+
 class LivePlotter:
-    """Manages a background process for real-time plotting via a Queue."""
+    """Manages a background process for real-time plotting via a bounded Queue."""
 
     def __init__(
         self,
@@ -27,8 +155,10 @@ class LivePlotter:
         video_path: Optional[str] = None,
         fps: int = 15,
         title: Optional[str] = None,
-        gui: bool = True,
+        gui: bool = False,
         report_step: int = 1,
+        max_queue_size: int = 20,
+        resume_threshold: int = 10,
     ):
         self.layout_path = layout_path
         self.display_length = display_length
@@ -36,12 +166,18 @@ class LivePlotter:
         self.output_path = output_path
         self.video_path = video_path
         self.fps = fps
-        self.codec = "libvpx-vp9",
+        self.codec = "libvpx-vp9"
         self.gui = gui
         self.report_step = report_step
+        self.max_queue_size = max_queue_size
+        self.resume_threshold = resume_threshold
         # Use 'spawn' to avoid inheriting PETSc/MPI signal handlers and state
         self._ctx = mp.get_context("spawn")
-        self._queue = self._ctx.Queue()
+        self._queue = BoundedVideoQueue(
+            maxsize=max_queue_size,
+            resume_threshold=resume_threshold,
+            ctx=self._ctx,
+        )
         self._process: Optional[mp.Process] = None
         self.title = title
 
@@ -58,7 +194,7 @@ class LivePlotter:
         """Stop the background plotting process."""
         if self._process and self._process.is_alive():
             try:
-                self._queue.put(None, timeout=1)  # Sentinel for exit
+                self._queue.put(None, timeout=2)  # Sentinel for exit
             except Exception:
                 pass
             self._process.join(timeout=15)
@@ -163,7 +299,7 @@ class LivePlotter:
 
                 try:
                     plt_desc = plot_data_new.load_layout_from_file(df, self.layout_path, self.measured_data_path)
-                    outfile_path = self.output_path if (self.report_step >= 10) else None
+                    outfile_path = None
                     if fig is None:
                         fig, ax_objects = plot_data_new.plot(
                             df,
@@ -343,7 +479,7 @@ def capture_state(
 
 
 def write_to_queue_async(
-    plot_queue: mp.Queue,
+    plot_queue: Any,
     mp_params: Any,
     c: Any,
     k: Any,
@@ -357,15 +493,67 @@ def write_to_queue_async(
 ) -> None:
     """
     Simultaneously snaps model state and sends it to the plot_queue.
+    If plot_queue is a BoundedVideoQueue and full, this blocks until the queue
+    drains to <= resume_threshold.
     """
     data = capture_state(
         mp_params, c, k, species_list, z, D_mol, diagenetic_reactions, equilibrium_reactions, current_dt
     )
 
-    # 3. Send to queue (as a simple dict of numpy arrays, which is picklable)
-    # Use put_nowait or a short timeout to avoid blocking the simulation if queue is full
     try:
-        plot_queue.put_nowait((data, title))
+        plot_queue.put((data, title))
     except Exception:
-        # If queue is full, just skip this update for performance
         pass
+
+
+def save_final_pdf(
+    mp: Any,
+    c: Any,
+    k: Any,
+    species_list_full: list[str],
+    z: np.ndarray,
+    D_mol: Any,
+    diagenetic_reactions: Any,
+    equilibrium_reactions: Any,
+    outfile: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Produce a static final PDF plot of the model state.
+    """
+    import fipyrite.plot_data_new as plot_data_new
+
+    if outfile is None:
+        outfile = f"{mp.plot_name}.pdf"
+
+    layout_file = getattr(mp, "layout_file", "plot_layout.py")
+    display_length = getattr(mp, "display_length", 2)
+    measured_data_path = getattr(mp, "measured_data_path", None)
+
+    try:
+        final_data = capture_state(
+            mp,
+            c,
+            k,
+            species_list_full,
+            z,
+            D_mol,
+            diagenetic_reactions,
+            equilibrium_reactions,
+            current_dt=0.0,
+        )
+        final_df = pd.DataFrame(final_data)
+        plt_desc = plot_data_new.load_layout_from_file(final_df, layout_file, measured_data_path)
+        plot_data_new.plot(
+            final_df,
+            display_length,
+            outfile=outfile,
+            show=False,
+            plot_description=plt_desc,
+            measured_data_path=measured_data_path,
+        )
+        print(f"[Parent] Saved final PDF plot: {outfile}", flush=True)
+        return outfile
+    except Exception as e:
+        print(f"[Parent] Warning: Could not save final PDF plot ({outfile}): {e}", flush=True)
+        return None
+

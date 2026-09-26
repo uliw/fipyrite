@@ -28,7 +28,7 @@ from .diff_lib import (
     save_data_async,
     save_state,
 )
-from .live_plot_lib import write_to_queue_async
+from .live_plot_lib import parse_time_to_seconds, save_final_pdf, write_to_queue_async
 
 
 def build_native_1d_transport_stencil(
@@ -247,6 +247,99 @@ class DirectAssembledSystem:
             var.setValue(new_val)
 
 
+class GovernorStats:
+    """Accumulates solver and governor events and reports summary breakdown."""
+
+    def __init__(self):
+        self.total_sweeps = 0
+        self.total_steps = 0
+        self.single_sweep_sweeps = 0
+        self.multi_sweep_sweeps = 0
+        self.near_converged_sweeps = 0
+        self.graceful_sweeps = 0
+        self.porewater_capped_sweeps = 0
+        self.isotope_capped_sweeps = 0
+        self.rejected_sweeps = 0
+        self.porewater_details: Dict[str, int] = {}
+        self.rejected_reasons: Dict[str, int] = {}
+
+    def record_step(
+        self,
+        sweeps: int,
+        outcome: str,
+        porewater_capped: bool = False,
+        limiting_species: Optional[str] = None,
+        isotope_capped: bool = False,
+    ) -> None:
+        self.total_steps += 1
+        self.total_sweeps += sweeps
+
+        if porewater_capped:
+            self.porewater_capped_sweeps += sweeps
+            if limiting_species:
+                self.porewater_details[limiting_species] = (
+                    self.porewater_details.get(limiting_species, 0) + 1
+                )
+        elif isotope_capped:
+            self.isotope_capped_sweeps += sweeps
+        elif outcome == "single_sweep":
+            self.single_sweep_sweeps += sweeps
+        elif outcome == "graceful":
+            self.graceful_sweeps += sweeps
+        elif outcome == "near_converged":
+            self.near_converged_sweeps += sweeps
+        else:
+            self.multi_sweep_sweeps += sweeps
+
+    def record_rejection(self, sweeps: int, reason: str = "failed") -> None:
+        self.total_sweeps += sweeps
+        self.rejected_sweeps += sweeps
+        short_reason = reason.split("\n")[0][:60]
+        self.rejected_reasons[short_reason] = (
+            self.rejected_reasons.get(short_reason, 0) + 1
+        )
+
+    def format_summary(self) -> str:
+        tot = max(self.total_sweeps, 1)
+        lines = [
+            f"Governor & Sweep Summary (Total Sweeps: {self.total_sweeps}, Steps: {self.total_steps}):"
+        ]
+        if self.single_sweep_sweeps > 0 or self.total_sweeps == 0:
+            lines.append(
+                f"  {self.single_sweep_sweeps / tot * 100:5.1f}% ({self.single_sweep_sweeps:d} sweeps): accepted with a single sweep"
+            )
+        if self.multi_sweep_sweeps > 0:
+            lines.append(
+                f"  {self.multi_sweep_sweeps / tot * 100:5.1f}% ({self.multi_sweep_sweeps:d} sweeps): accepted with multi-sweeps"
+            )
+        if self.graceful_sweeps > 0 or self.near_converged_sweeps > 0:
+            grace_tot = self.graceful_sweeps + self.near_converged_sweeps
+            lines.append(
+                f"  {grace_tot / tot * 100:5.1f}% ({grace_tot:d} sweeps): accepted near convergence / graceful tolerance"
+            )
+        if self.porewater_capped_sweeps > 0:
+            lim_str = ""
+            if self.porewater_details:
+                top_sp = max(self.porewater_details.items(), key=lambda x: x[1])[0]
+                lim_str = f" (limiting: {top_sp})"
+            lines.append(
+                f"  {self.porewater_capped_sweeps / tot * 100:5.1f}% ({self.porewater_capped_sweeps:d} sweeps): capped because porewater depleted too fast{lim_str}"
+            )
+        if self.isotope_capped_sweeps > 0:
+            lines.append(
+                f"  {self.isotope_capped_sweeps / tot * 100:5.1f}% ({self.isotope_capped_sweeps:d} sweeps): capped by isotope limiter"
+            )
+        if self.rejected_sweeps > 0:
+            top_reason = ""
+            if self.rejected_reasons:
+                top_r = max(self.rejected_reasons.items(), key=lambda x: x[1])[0]
+                top_reason = f" ({top_r})"
+            lines.append(
+                f"  {self.rejected_sweeps / tot * 100:5.1f}% ({self.rejected_sweeps:d} sweeps): rejected / Picard convergence failure{top_reason}"
+            )
+        return "\n".join(lines)
+
+
 def run_non_steady_state_solver_direct(
     mp: Any,
     c: Any,
@@ -361,6 +454,13 @@ def run_non_steady_state_solver_direct(
         else dt_controller.dt_max
     )
 
+    governor_stats = GovernorStats()
+    video_dt_sec = parse_time_to_seconds(getattr(mp, "video_dt", None))
+    last_video_time = -math.inf
+    next_milestone_pct = 10
+    t_end = getattr(mp, "t_end", math.inf)
+    max_steps = getattr(mp, "max_steps", None)
+
     step = 0
     total_time = 0.0
     status = "Maximum steps or end time reached"
@@ -388,8 +488,8 @@ def run_non_steady_state_solver_direct(
 
     try:
         while (
-            step < getattr(mp, "max_steps", 1000)
-            and total_time < getattr(mp, "t_end", math.inf)
+            (max_steps is None or step < max_steps)
+            and total_time < t_end
         ):
             step += 1
 
@@ -516,6 +616,7 @@ def run_non_steady_state_solver_direct(
                             finally:
                                 mp.in_clip = False
                     else:
+                        inner_sweeps = 1
                         total_sweeps += 1
                         f_res, RATES = _eval_reactions(current_dt)
                         assembled_system.sweep(
@@ -532,9 +633,12 @@ def run_non_steady_state_solver_direct(
                     converged = True
 
                 except Exception as e:
-                    _log(
-                        f"[{_format_wall_time(time.time() - start_wall)}]   Step failed at dt={get_time_units(current_dt):.2f~P}: {e}\n  Cutting dt and retrying."
-                    )
+                    failed_sweeps = max(inner_sweeps, 1) if enable_inner_sweeping else 1
+                    governor_stats.record_rejection(failed_sweeps, reason=str(e))
+                    if getattr(mp, "verbose", False):
+                        _log(
+                            f"[{_format_wall_time(time.time() - start_wall)}]   Step failed at dt={get_time_units(current_dt):.2f~P}: {e}\n  Cutting dt and retrying."
+                        )
                     for s_obj in species_struct:
                         s_obj["var"].value[:] = s_obj["var"].old.value
 
@@ -572,7 +676,7 @@ def run_non_steady_state_solver_direct(
 
             # --- Adapt time step for next iteration ---
             if enable_inner_sweeping and adaptive_sweeps_dt:
-                effective_max = dt_controller.get_effective_max(_log=_log)
+                effective_max = dt_controller.get_effective_max(_log=_log if getattr(mp, "verbose", False) else None)
                 if graceful_accepted:
                     dt_controller._dt = max(
                         dt_controller._dt * 0.85, dt_controller.dt_min
@@ -605,6 +709,8 @@ def run_non_steady_state_solver_direct(
                 )
 
             # --- Apply Dynamic Relative Porewater Depletion Governor ---
+            porewater_capped = False
+            lim_sp = None
             if enable_porewater_governor:
                 wall_str = (
                     f"[{_format_wall_time(time.time() - start_wall)}] "
@@ -624,17 +730,22 @@ def run_non_steady_state_solver_direct(
                     conc_presence_floor=porewater_conc_presence_floor,
                     dt_min=dt_controller.dt_min,
                     dt_max=dt_controller.dt_max,
-                    _log=_log,
+                    _log=_log if getattr(mp, "verbose", False) else None,
                     wall_time_str=wall_str,
                 )
+                if obs_rel > max_rel_porewater_change and adapted_dt < dt_controller._dt:
+                    porewater_capped = True
                 dt_controller._dt = adapted_dt
                 dt_controller._dt_prev = adapted_dt
 
             # --- Apply Dynamic Isotope dt Limiter ---
+            isotope_capped = False
             if enable_isotope_dt_limiter and getattr(mp, "isotopes", False):
                 if isotope_limiter_species in c:
                     max_conc = np.max(c[isotope_limiter_species].value)
                     if max_conc > isotope_onset_threshold:
+                        if dt_max_isotope < dt_controller._dt:
+                            isotope_capped = True
                         dt_controller._dt = min(
                             dt_controller._dt, dt_max_isotope
                         )
@@ -642,11 +753,58 @@ def run_non_steady_state_solver_direct(
                             dt_controller._dt_prev, dt_max_isotope
                         )
 
-            if step % getattr(mp, "backup_step", 1000) == 0:
+            # Record step outcome in GovernorStats
+            outcome = "single_sweep"
+            if enable_inner_sweeping:
+                if graceful_accepted:
+                    outcome = "graceful"
+                elif near_converged_accepted:
+                    outcome = "near_converged"
+                elif last_inner_sweeps > 1:
+                    outcome = "multi_sweep"
+
+            governor_stats.record_step(
+                sweeps=last_inner_sweeps if enable_inner_sweeping else 1,
+                outcome=outcome,
+                porewater_capped=porewater_capped,
+                limiting_species=lim_sp if porewater_capped else None,
+                isotope_capped=isotope_capped,
+            )
+
+            # --- 10% Progress Milestone Reporting ---
+            if t_end < math.inf and t_end > 0:
+                pct = (total_time / t_end) * 100.0
+                while next_milestone_pct <= 100 and pct >= next_milestone_pct:
+                    elapsed_sec = int(time.time() - start_wall)
+                    time_str = f"{get_time_units(total_time):.1f~P}"
+                    _log(f"{elapsed_sec}, {time_str}, {next_milestone_pct}%")
+                    next_milestone_pct += 10
+
+            # --- Video Output Frame Dispatch ---
+            if video_dt_sec is not None and plot_queue is not None:
+                if total_time - last_video_time >= video_dt_sec or step == 1:
+                    title_str = f"Time: {get_time_units(total_time):.2f~P}"
+                    write_to_queue_async(
+                        plot_queue,
+                        mp,
+                        c,
+                        mp.k if hasattr(mp, "k") else k,
+                        species_list_full,
+                        z,
+                        D_mol,
+                        diagenetic_reactions,
+                        equilibrium_reactions,
+                        current_dt,
+                        title_str,
+                    )
+                    last_video_time = total_time
+
+            backup_step = getattr(mp, "backup_step", None)
+            if backup_step is not None and step % backup_step == 0:
                 gc.collect()
                 save_state(c, f"{mp.plot_name}_bak.npz")
 
-            if step % getattr(mp, "report_step", 10) == 0:
+            if getattr(mp, "legacy_reporting", False) and step % getattr(mp, "report_step", 10) == 0:
                 _report_step_status(
                     step,
                     total_time,
@@ -681,7 +839,8 @@ def run_non_steady_state_solver_direct(
             current_dt = dt_controller.dt
 
     except KeyboardInterrupt:
-        status = "Solver interrupted by user"
+        status = "Solver interrupted by user (Ctrl-C)"
+        _log("\n[Solver] KeyboardInterrupt caught. Terminating simulation gracefully...")
     except Exception as e:
         status = f"Solver crashed: {e}"
         print(traceback.format_exc())
@@ -696,6 +855,7 @@ def run_non_steady_state_solver_direct(
         f"Final Report: {status} in {step} steps ({total_sweeps} total sweeps{sweeps_rate_str}). "
         f"Total Wall Time: {_format_wall_time(elapsed_total)} ({elapsed_total:.2f}s)"
     )
+    _log(governor_stats.format_summary())
 
     try:
         csv_file = f"{mp.plot_name}.csv"
@@ -724,7 +884,7 @@ def run_non_steady_state_solver_direct(
             plot_queue,
             mp,
             c,
-            k,
+            mp.k if hasattr(mp, "k") else k,
             species_list_full,
             z,
             D_mol,
@@ -732,6 +892,19 @@ def run_non_steady_state_solver_direct(
             equilibrium_reactions,
             current_dt,
             title_str,
+        )
+
+    # Save final PDF if plot_queue is None and layout_file is specified
+    if hasattr(mp, "layout_file") and mp.layout_file and plot_queue is None:
+        save_final_pdf(
+            mp,
+            c,
+            k,
+            species_list_full,
+            z,
+            D_mol,
+            diagenetic_reactions,
+            equilibrium_reactions,
         )
 
     _log_file.close()
