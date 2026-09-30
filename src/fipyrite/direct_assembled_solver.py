@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Callable
 import numpy as np
 from scipy.linalg import solve_banded
 
+from .solvers_numba import solve_tridiagonal_thomas
+
 from .diff_lib import (
     ArrayProxy,
     Mesh1D,
@@ -149,6 +151,9 @@ class DirectAssembledSystem:
         self.ab_transport: Dict[str, np.ndarray] = {}
         self.b_transport: Dict[str, np.ndarray] = {}
         self.eff_phi_vol: Dict[str, np.ndarray] = {}
+        self.c_prime_work = np.empty(self.num_cells - 1, dtype=np.float64)
+        self.ab_work = np.empty((3, self.num_cells), dtype=np.float64)
+        self.b_work = np.empty(self.num_cells, dtype=np.float64)
 
         phi_val = np.asarray(mp.phi.value if hasattr(mp.phi, "value") else mp.phi)
         solid_scheme = getattr(mp, "solid_convection_term", "powerlaw")
@@ -219,32 +224,29 @@ class DirectAssembledSystem:
             rhs_val = _get_arr(f_res.raw_RHS.get(name, 0.0))
             cross_list = f_res.raw_CROSS.get(name, [])
 
-            # Prepare banded matrix (3, N)
-            ab = self.ab_transport[name].copy()
+            # Prepare banded matrix (3, N) in-place
+            np.copyto(self.ab_work, self.ab_transport[name])
             # Patankar linearization on diagonal:
             # -min(0, lhs_val) * vol increases diagonal dominance for negative sink terms
-            ab[1, :] += inv_dt_factor - np.minimum(0.0, lhs_val) * vol
+            self.ab_work[1, :] += inv_dt_factor - np.minimum(0.0, lhs_val) * vol
 
-            # Prepare RHS vector (N,)
-            b = (
-                self.b_transport[name]
-                + inv_dt_factor * old_val
-                + rhs_val * vol
-            )
+            # Prepare RHS vector (N,) in-place
+            np.copyto(self.b_work, self.b_transport[name])
+            self.b_work += inv_dt_factor * old_val + rhs_val * vol
             if np.any(lhs_val > 0.0):
-                b += np.maximum(0.0, lhs_val) * vol * prev_val
+                self.b_work += np.maximum(0.0, lhs_val) * vol * prev_val
 
             # Cross-species couplings: evaluated explicitly using prev_iterate
             for source_name, coeff in cross_list:
                 coeff_val = _get_arr(coeff)
                 source_prev = prev_iterate[source_name]
-                b += coeff_val * vol * source_prev
+                self.b_work += coeff_val * vol * source_prev
 
-            # Direct LAPACK banded solve: O(N) in C
-            new_val = solve_banded((1, 1), ab, b)
-
-            # Update solution variable
-            var.setValue(new_val)
+            # Direct Thomas tridiagonal solve: O(N) in C/JIT
+            out = np.asarray(var.value)
+            solve_tridiagonal_thomas(self.ab_work, self.b_work, out, self.c_prime_work)
+            if not (var.value is out):
+                var.setValue(out)
 
 
 class GovernorStats:
@@ -470,21 +472,19 @@ def run_non_steady_state_solver_direct(
     rms_change = 1.0
     prev_was_near_converged = False
 
+    c_numpy = data_container(
+        {s: ArrayProxy(val.value) for s, val in c.items()}
+    )
+    mp_numpy = data_container(mp)
+    phi_val = mp.phi.value if hasattr(mp.phi, "value") else mp.phi
+    mp_numpy.phi = ArrayProxy(phi_val)
+    mp_numpy.in_solver = True
+    f_res = data_container()
+
     def _eval_reactions(dt_step: float) -> Tuple[Any, Any]:
-        c_numpy = data_container(
-            {s: ArrayProxy(val.value) for s, val in c.items()}
-        )
-        mp_numpy = data_container(mp)
-        phi_val = mp.phi.value if hasattr(mp.phi, "value") else mp.phi
-        mp_numpy.phi = ArrayProxy(phi_val)
         mp_numpy.current_dt = dt_step
-        mp_numpy.in_solver = True
-        f_res = data_container()
-        try:
-            f_res, RATES = diagenetic_reactions(mp_numpy, c_numpy, k, f=f_res)
-        finally:
-            mp_numpy.in_solver = False
-        return f_res, RATES
+        f_res_out, RATES = diagenetic_reactions(mp_numpy, c_numpy, k, f=f_res)
+        return f_res_out, RATES
 
     try:
         while (
