@@ -1,2 +1,2 @@
-A fipy based reaction transport model that model sulfate reduction and pyrite formation
+A reaction transport model for diagenetic reactions in marine sediments
   

@@ -1,8 +1,7 @@
-fipy
+numba
 numpy
 pandas
 matplotlib
-scipy
 watchdog
 chempy
 argparse
