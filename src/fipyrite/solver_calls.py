@@ -40,6 +40,7 @@ from .diff_lib import (
     save_state,
 )
 from .live_plot_lib import write_to_queue_async
+from .solvers_numba import compute_species_residual_wrms, compute_species_residual_linf
 
 
 
@@ -335,19 +336,21 @@ def _compute_inner_residual(
     Returns value <= 1.0 when inner convergence criterion is met.
     """
     max_err_ratio = 0.0
+    is_wrms = (inner_norm == "wrms")
     for s_obj in species_struct:
         name = s_obj["name"]
-        curr_val = s_obj["var"].value
+        curr_val = np.asarray(s_obj["var"].value)
         prev_val = prev_iterate[name]
-        diff = np.abs(curr_val - prev_val)
-        scale = inner_tol * np.abs(curr_val) + atol_default
-        ratio = diff / scale
-        if np.any(np.isnan(ratio)) or np.any(np.isinf(ratio)):
-            return float("inf")
-        if inner_norm == "wrms":
-            err_ratio = float(np.sqrt(np.mean(ratio**2)))
+        if is_wrms:
+            err_ratio = compute_species_residual_wrms(
+                curr_val, prev_val, inner_tol, atol_default
+            )
         else:
-            err_ratio = float(np.max(ratio))
+            err_ratio = compute_species_residual_linf(
+                curr_val, prev_val, inner_tol, atol_default
+            )
+        if math.isinf(err_ratio):
+            return float("inf")
         if err_ratio > max_err_ratio:
             max_err_ratio = err_ratio
     return max_err_ratio
