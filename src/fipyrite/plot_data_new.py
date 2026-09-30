@@ -32,19 +32,24 @@ Custom Plot Description:
             "left_ylabel": "Concentration [mmol/l]",
             "right": [[df.c_o2, "O2 [μmol]", {"color": "green"}]],
             "right_ylabel": "O2 [μmol/l]",
-            "options-left": "set_ylim(0, 30)",  # Apply matplotlib methods
+            "options-left": ["set_ylim(-55, 30)", "exclude_y(-4, 20)"],  # Broken y-axis & methods
         },
     }
     plot_data_new.plot(df, 10, "output.pdf", plot_description=plot_description)
 """
 
 import argparse
+import importlib.util
 import pathlib as pl
 import warnings
 
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
+import matplotlib.scale as mscale
+import matplotlib.ticker as mticker
+import matplotlib.transforms as mtransforms
+import numpy as np
 import pandas as pd
-import importlib.util
 
 # import matplotlib
 # matplotlib.use("TkAgg")
@@ -209,6 +214,24 @@ def plot(
             ax_main.set_xlim(subplot_config["xlim"])
         if "ylim" in subplot_config:
             ax_main.set_ylim(subplot_config["ylim"])
+        if "broken_axis" in subplot_config:
+            b_val = subplot_config["broken_axis"]
+            if isinstance(b_val, (tuple, list)):
+                broken_axis(ax_main, *b_val)
+            elif isinstance(b_val, str):
+                _apply_matplotlib_options(ax_main, f"broken_axis({b_val})" if "(" not in b_val else b_val)
+        elif "broken_y" in subplot_config:
+            b_val = subplot_config["broken_y"]
+            if isinstance(b_val, (tuple, list)):
+                broken_axis(ax_main, *b_val)
+            elif isinstance(b_val, str):
+                _apply_matplotlib_options(ax_main, f"broken_axis({b_val})" if "(" not in b_val else b_val)
+        elif "exclude_y" in subplot_config:
+            ex = subplot_config["exclude_y"]
+            if isinstance(ex, (tuple, list)) and len(ex) >= 2:
+                exclude_y(ax_main, ex[0], ex[1])
+            elif isinstance(ex, str):
+                _apply_matplotlib_options(ax_main, f"exclude_y({ex})" if "(" not in ex else ex)
         if "grid" in subplot_config:
             grid_config = subplot_config["grid"]
             if isinstance(grid_config, dict):
@@ -266,6 +289,7 @@ def plot(
 
     if not is_constrained:
         fig.tight_layout()
+    _finalize_broken_axes(fig)
     if outfile:
         # Save current size to restore it later (preserves GUI window state)
         original_size = fig.get_size_inches()
@@ -274,6 +298,7 @@ def plot(
         fig.set_size_inches(fig_width, 2 + 2 * n_subplots)
         if not is_constrained:
             fig.tight_layout()
+        _finalize_broken_axes(fig)
         fig.savefig(outfile, bbox_inches="tight")
 
         # Restore original size if the figure is meant to stay open or be shown
@@ -281,8 +306,10 @@ def plot(
             fig.set_size_inches(*original_size)
             if not is_constrained:
                 fig.tight_layout()
+            _finalize_broken_axes(fig)
 
     if show:
+        _finalize_broken_axes(fig)
         plt.show()
     elif not keep_open:
         plt.close(fig)
@@ -383,6 +410,10 @@ def _setup_subplot_axes(ax_main, subplot_config):
                 right_axes.append((twin_ax, key, series_idx, series))
 
             current_axis_idx += 1
+
+    for twin_ax, _, _, _ in right_axes:
+        twin_ax._is_twin_right = True
+    ax_main._has_right_axes = len(right_axes) > 0
 
     return ax_main, right_axes
 
@@ -553,6 +584,8 @@ def _apply_all_options(ax_main, right_axes, subplot_config):
     # Left axis
     if "options-left" in subplot_config:
         _apply_matplotlib_options(ax_main, subplot_config["options-left"])
+    elif "options" in subplot_config:
+        _apply_matplotlib_options(ax_main, subplot_config["options"])
 
     # Right axes
     right_axis_map = {}
@@ -649,48 +682,426 @@ def load_layout_from_file(df, layout_path, measured_data_path=None):
         return module.get_layout(df_wrapped)
 
 
-def _apply_matplotlib_options(ax, options_str):
+class BrokenYTransform(mtransforms.Transform):
+    input_dims = 1
+    output_dims = 1
+    is_separable = True
+    has_inverse = True
+
+    def __init__(self, axis, y1, y2, gap_ratio=0.03, split_ratio=0.5):
+        super().__init__()
+        self.axis = axis
+        self.y1 = float(min(y1, y2))
+        self.y2 = float(max(y1, y2))
+        self.gap_ratio = float(gap_ratio)
+        self.split_ratio = split_ratio
+
+    def _get_params(self):
+        if self.axis is not None:
+            ymin, ymax = self.axis.get_view_interval()
+        else:
+            ymin, ymax = -55.0, 30.0
+
+        y_low = self.y1
+        y_high = self.y2
+
+        if ymin > ymax:
+            ymin, ymax = ymax, ymin
+
+        if self.split_ratio == "proportional" or self.split_ratio is None:
+            range1 = max(y_low - ymin, 1e-9)
+            range2 = max(ymax - y_high, 1e-9)
+            total = range1 + range2
+            f1 = range1 / total
+            f1 = min(max(f1, 0.2), 0.8)
+        else:
+            f1 = float(self.split_ratio)
+
+        p1 = (1.0 - self.gap_ratio) * f1
+        p2 = p1 + self.gap_ratio
+        return ymin, ymax, y_low, y_high, p1, p2
+
+    def transform_non_affine(self, a):
+        ymin, ymax, y_low, y_high, p1, p2 = self._get_params()
+        vals = np.asarray(a, dtype=float)
+        res = np.zeros_like(vals)
+        mask1 = vals <= y_low
+        mask2 = vals >= y_high
+        mask_mid = ~mask1 & ~mask2
+
+        if y_low > ymin:
+            res[mask1] = (vals[mask1] - ymin) / (y_low - ymin) * p1
+        else:
+            res[mask1] = 0.0
+
+        if ymax > y_high:
+            res[mask2] = p2 + (vals[mask2] - y_high) / (ymax - y_high) * (1.0 - p2)
+        else:
+            res[mask2] = 1.0
+
+        if y_high > y_low:
+            res[mask_mid] = p1 + (vals[mask_mid] - y_low) / (y_high - y_low) * (p2 - p1)
+        else:
+            res[mask_mid] = p1
+        return res
+
+    def inverted(self):
+        return InvertedBrokenYTransform(self)
+
+
+class InvertedBrokenYTransform(mtransforms.Transform):
+    input_dims = 1
+    output_dims = 1
+    is_separable = True
+    has_inverse = True
+
+    def __init__(self, fwd):
+        super().__init__()
+        self.fwd = fwd
+
+    def transform_non_affine(self, a):
+        ymin, ymax, y_low, y_high, p1, p2 = self.fwd._get_params()
+        vals = np.asarray(a, dtype=float)
+        res = np.zeros_like(vals)
+        mask1 = vals <= p1
+        mask2 = vals >= p2
+        mask_mid = ~mask1 & ~mask2
+
+        if p1 > 0:
+            res[mask1] = ymin + (vals[mask1] / p1) * (y_low - ymin)
+        else:
+            res[mask1] = ymin
+
+        if (1.0 - p2) > 0:
+            res[mask2] = y_high + ((vals[mask2] - p2) / (1.0 - p2)) * (ymax - y_high)
+        else:
+            res[mask2] = ymax
+
+        if (p2 - p1) > 0:
+            res[mask_mid] = y_low + ((vals[mask_mid] - p1) / (p2 - p1)) * (y_high - y_low)
+        else:
+            res[mask_mid] = y_low
+        return res
+
+    def inverted(self):
+        return self.fwd
+
+
+class BrokenLocator(mticker.Locator):
+    def __init__(self, y1, y2, axis=None):
+        super().__init__()
+        self.y1 = float(min(y1, y2))
+        self.y2 = float(max(y1, y2))
+        self.axis = axis
+        self.loc1 = mticker.MaxNLocator(nbins=4, steps=[1, 2, 2.5, 5, 10])
+        self.loc2 = mticker.MaxNLocator(nbins=4, steps=[1, 2, 2.5, 5, 10])
+
+    def tick_values(self, vmin, vmax):
+        y1 = self.y1
+        y2 = self.y2
+        low_min, low_max = min(vmin, y1), max(vmin, y1)
+        high_min, high_max = min(vmax, y2), max(vmax, y2)
+
+        t1 = self.loc1.tick_values(low_min, low_max)
+        t1 = t1[(t1 >= low_min) & (t1 <= low_max)]
+
+        t2 = self.loc2.tick_values(high_min, high_max)
+        t2 = t2[(t2 >= high_min) & (t2 <= high_max)]
+
+        all_ticks = np.unique(np.concatenate([t1, t2]))
+        tol1 = (low_max - low_min) * 0.03 if low_max > low_min else 1e-4
+        tol2 = (high_max - high_min) * 0.03 if high_max > high_min else 1e-4
+        filtered = [
+            t for t in all_ticks
+            if (t < y1 - tol1) or (t > y2 + tol2)
+        ]
+        if not filtered:
+            filtered = [t for t in all_ticks if t <= y1 or t >= y2]
+        return np.array(filtered)
+
+    def __call__(self):
+        if hasattr(self, "axis") and self.axis is not None:
+            vmin, vmax = self.axis.get_view_interval()
+        else:
+            vmin, vmax = -55.0, 30.0
+        return self.tick_values(vmin, vmax)
+
+
+class BrokenYScale(mscale.ScaleBase):
+    name = "broken_y"
+
+    def __init__(self, axis, *, y1=-4, y2=20, gap_ratio=0.03, split_ratio=0.5, **kwargs):
+        super().__init__(axis)
+        self.axis = axis
+        self.y1 = float(min(y1, y2))
+        self.y2 = float(max(y1, y2))
+        self.gap_ratio = float(gap_ratio)
+        self.split_ratio = split_ratio
+        self._transform = BrokenYTransform(axis, self.y1, self.y2, self.gap_ratio, self.split_ratio)
+
+    def get_transform(self):
+        return self._transform
+
+    def set_default_locators_and_formatters(self, axis):
+        axis.set_major_locator(BrokenLocator(self.y1, self.y2, axis=axis))
+        axis.set_major_formatter(mticker.ScalarFormatter())
+
+    def limit_range_for_scale(self, vmin, vmax, minpos):
+        return vmin, vmax
+
+
+mscale.register_scale(BrokenYScale)
+
+
+def _update_broken_y_marks(ax):
+    """Draw or update broken-axis visual marks (gap mask and slash lines) on the axis."""
+    if not hasattr(ax, "_broken_y_info"):
+        return
+
+    # Clean up previous artists
+    for artist in getattr(ax, "_broken_y_artists", []):
+        try:
+            artist.remove()
+        except Exception:
+            pass
+    ax._broken_y_artists = []
+
+    transform = ax.yaxis.get_transform()
+    if not hasattr(transform, "_get_params"):
+        return
+
+    ymin, ymax, y_low, y_high, p1, p2 = transform._get_params()
+
+    bg_color = ax.get_facecolor()
+    if isinstance(bg_color, tuple) and len(bg_color) == 4 and bg_color[3] == 0:
+        bg_color = ax.figure.get_facecolor() if ax.figure else "white"
+        if isinstance(bg_color, tuple) and len(bg_color) == 4 and bg_color[3] == 0:
+            bg_color = "white"
+
+    # Mask patch covering the excluded gap across the plot width
+    patch = mpatches.Rectangle(
+        (0.0, p1),
+        1.0,
+        p2 - p1,
+        transform=ax.transAxes,
+        facecolor=bg_color,
+        edgecolor="none",
+        zorder=49,
+        clip_on=False,
+    )
+    ax.add_patch(patch)
+    ax._broken_y_artists.append(patch)
+
+    is_twin_right = getattr(ax, "_is_twin_right", False)
+    if is_twin_right:
+        sides = [1.0]
+    else:
+        has_right_axes = getattr(ax, "_has_right_axes", False)
+        sides = [0.0] if has_right_axes else [0.0, 1.0]
+
+    fig = ax.figure
+    bbox = ax.get_window_extent()
+    dpi = fig.dpi if fig else 100
+    if bbox.width > 0 and bbox.height > 0:
+        w_pts = bbox.width / dpi * 72
+        h_pts = bbox.height / dpi * 72
+    else:
+        w_pts = fig.get_figwidth() * 72 * 0.7 if fig else 400
+        h_pts = fig.get_figheight() * 72 * 0.7 if fig else 200
+
+    dx = 5.0 / max(w_pts, 1.0)
+    dy = 3.5 / max(h_pts, 1.0)
+
+    for x_pos in sides:
+        spine_name = "right" if x_pos == 1.0 else "left"
+        spine_color = "k"
+        spine_lw = 1.0
+        if spine_name in ax.spines:
+            spine = ax.spines[spine_name]
+            spine_color = spine.get_edgecolor()
+            spine_lw = spine.get_linewidth() or 1.0
+
+        # Spine gap line (colored like background)
+        (gap_line,) = ax.plot(
+            [x_pos, x_pos],
+            [p1, p2],
+            color=bg_color,
+            lw=spine_lw + 2.5,
+            transform=ax.transAxes,
+            zorder=50,
+            clip_on=False,
+        )
+        ax._broken_y_artists.append(gap_line)
+
+        # Diagonal slash marks at p1 and p2
+        for y_pos in [p1, p2]:
+            (slash,) = ax.plot(
+                [x_pos - dx, x_pos + dx],
+                [y_pos - dy, y_pos + dy],
+                color=spine_color,
+                lw=spine_lw,
+                transform=ax.transAxes,
+                zorder=51,
+                clip_on=False,
+            )
+            ax._broken_y_artists.append(slash)
+
+
+def _finalize_broken_axes(fig):
+    """Update all broken axis marks in the figure to reflect final layout and limits."""
+    for ax in fig.axes:
+        if hasattr(ax, "_broken_y_info"):
+            _update_broken_y_marks(ax)
+
+
+def exclude_y(ax, y1, y2, gap_ratio=0.03, split_ratio=0.5, **kwargs):
+    """Set a broken y-axis on an axis, excluding the interval [y1, y2].
+
+    Args
+    ----
+    ax: Matplotlib Axes object
+    y1, y2: Boundary values of the interval to exclude.
+    gap_ratio: Fraction of the axis height allocated to the visual break gap (default: 0.03).
+    split_ratio: Height fraction allocated to the lower section (default: 0.5 for equal split,
+                 or 'proportional' for proportional to data range).
+    """
+    y_low = min(float(y1), float(y2))
+    y_high = max(float(y1), float(y2))
+
+    cur_ylim = ax.get_ylim()
+
+    ax.set_yscale(
+        "broken_y",
+        y1=y_low,
+        y2=y_high,
+        gap_ratio=gap_ratio,
+        split_ratio=split_ratio,
+        **kwargs,
+    )
+
+    if cur_ylim != (0.0, 1.0):
+        ax.set_ylim(cur_ylim)
+
+    ax._broken_y_info = {
+        "y1": y_low,
+        "y2": y_high,
+        "gap_ratio": gap_ratio,
+        "split_ratio": split_ratio,
+    }
+
+    if not hasattr(ax, "_broken_y_cid"):
+        ax._broken_y_cid = ax.callbacks.connect(
+            "ylim_changed", lambda a: _update_broken_y_marks(a)
+        )
+
+    _update_broken_y_marks(ax)
+
+
+def broken_axis(ax, *args, **kwargs):
+    """Configure a broken axis by specifying the two intervals to display.
+
+    Usage:
+        broken_axis(ax, -45, -35, 20, 30)
+        broken_axis(ax, (-45, -35), (20, 30))
+        broken_axis(ax, -45, -35, 20, 30, split_ratio=0.5, gap_ratio=0.03)
+
+    Args:
+        ax: Matplotlib Axes object.
+        *args: Either 4 numbers (y1_min, y1_max, y2_min, y2_max)
+               or 2 tuples/lists ((y1_min, y1_max), (y2_min, y2_max)).
+        gap_ratio: Fraction of axis height for the break gap (default: 0.03).
+        split_ratio: Height fraction for the lower section (default: 0.5 for equal split,
+                     or 'proportional').
+    """
+    gap_ratio = kwargs.pop("gap_ratio", 0.03)
+    split_ratio = kwargs.pop("split_ratio", 0.5)
+
+    if len(args) == 1 and isinstance(args[0], (tuple, list)) and len(args[0]) == 4:
+        y1_min, y1_max, y2_min, y2_max = args[0]
+    elif len(args) == 2 and isinstance(args[0], (tuple, list)) and isinstance(args[1], (tuple, list)):
+        y1_min, y1_max = args[0]
+        y2_min, y2_max = args[1]
+    elif len(args) >= 4:
+        y1_min, y1_max, y2_min, y2_max = args[:4]
+    else:
+        raise ValueError(
+            "broken_axis requires 4 boundary values or 2 pairs defining intervals: "
+            "e.g. broken_axis(-45, -35, 20, 30) or broken_axis((-45, -35), (20, 30))"
+        )
+
+    interval_a = (min(float(y1_min), float(y1_max)), max(float(y1_min), float(y1_max)))
+    interval_b = (min(float(y2_min), float(y2_max)), max(float(y2_min), float(y2_max)))
+    if interval_a[0] > interval_b[0]:
+        interval_a, interval_b = interval_b, interval_a
+
+    ymin, y_low = interval_a
+    y_high, ymax = interval_b
+
+    ax.set_ylim(ymin, ymax)
+    exclude_y(ax, y_low, y_high, gap_ratio=gap_ratio, split_ratio=split_ratio, **kwargs)
+
+
+broken_y = broken_axis
+
+# Attach as methods to matplotlib.axes.Axes
+plt.Axes.exclude_y = exclude_y
+plt.Axes.broken_axis = broken_axis
+plt.Axes.broken_y = broken_axis
+
+
+def _apply_matplotlib_options(ax, options):
     """Apply arbitrary matplotlib method calls to an axis.
 
     Args
     ----
     ax: Matplotlib axis object
-    options_str: String containing matplotlib method calls, separated by commas.
-                Example: "set_ylim(1e-10,1e-5), set_title('My Title')"
+    options: String or list/tuple containing matplotlib method calls.
+             Separated by commas if multiple calls are within a single string.
+             Examples:
+                 "set_ylim(1e-10, 1e-5), set_title('My Title')"
+                 ["broken_axis(-45, -35, 20, 30)"]
+                 ["set_ylim(-55, 30)", "exclude_y(-4, 20)"]
 
     The function safely parses and executes each method call on the provided axis.
     Each method call should be in the format: method_name(arg1, arg2, ...)
     Multiple calls can be separated by commas.
-
-    Note: This function uses eval() to parse arguments. Only use with trusted input.
     """
-    if not options_str or not options_str.strip():
+    if not options:
         return
 
-    # Split by comma to get individual method calls
-    # We need to be careful with commas inside parentheses
+    if isinstance(options, str):
+        raw_items = [options]
+    elif isinstance(options, (list, tuple)):
+        raw_items = list(options)
+    else:
+        raw_items = [str(options)]
+
     method_calls = []
-    current_call = ""
-    paren_depth = 0
+    for item in raw_items:
+        if not isinstance(item, str):
+            item = str(item)
+        item = item.strip()
+        if not item:
+            continue
 
-    for char in options_str:
-        if char == "(":
-            paren_depth += 1
-            current_call += char
-        elif char == ")":
-            paren_depth -= 1
-            current_call += char
-        elif char == "," and paren_depth == 0:
-            # This comma is a separator between method calls
-            if current_call.strip():
-                method_calls.append(current_call.strip())
-            current_call = ""
-        else:
-            current_call += char
-
-    # Don't forget the last call
-    if current_call.strip():
-        method_calls.append(current_call.strip())
+        # Split by comma to get individual method calls, respecting parentheses
+        current_call = ""
+        paren_depth = 0
+        for char in item:
+            if char == "(":
+                paren_depth += 1
+                current_call += char
+            elif char == ")":
+                paren_depth -= 1
+                current_call += char
+            elif char == "," and paren_depth == 0:
+                if current_call.strip():
+                    method_calls.append(current_call.strip())
+                current_call = ""
+            else:
+                current_call += char
+        if current_call.strip():
+            method_calls.append(current_call.strip())
 
     # Execute each method call
     for call in method_calls:
@@ -700,17 +1111,34 @@ def _apply_matplotlib_options(ax, options_str):
 
         # Parse method name and arguments
         if "(" not in call:
-            # Method with no arguments
             method_name = call
-            if hasattr(ax, method_name):
-                getattr(ax, method_name)()
-            else:
-                warnings.warn(f"Axis does not have method '{method_name}', skipping")
+            args_str = ""
+        else:
+            method_name = call[: call.index("(")].strip()
+            args_str = call[call.index("(") + 1 : call.rindex(")")].strip()
+
+        # Intercept broken_axis / broken_y
+        if method_name in ("broken_axis", "broken_y"):
+            try:
+                safe_dict = {
+                    "ax": ax,
+                    "broken_axis": broken_axis,
+                    "broken_y": broken_axis,
+                    "__builtins__": {},
+                }
+                eval(f"broken_axis(ax, {args_str})", safe_dict)
+            except Exception as e:
+                warnings.warn(f"Failed to execute {method_name}({args_str}): {e}")
             continue
 
-        # Extract method name and arguments
-        method_name = call[: call.index("(")].strip()
-        args_str = call[call.index("(") + 1 : call.rindex(")")].strip()
+        # Intercept exclude_y
+        if method_name == "exclude_y":
+            try:
+                safe_dict = {"ax": ax, "exclude_y": exclude_y, "__builtins__": {}}
+                eval(f"exclude_y(ax, {args_str})", safe_dict)
+            except Exception as e:
+                warnings.warn(f"Failed to execute exclude_y({args_str}): {e}")
+            continue
 
         # Check if method exists on axis
         if not hasattr(ax, method_name):
@@ -719,8 +1147,6 @@ def _apply_matplotlib_options(ax, options_str):
 
         # Execute the method call using eval in a context where 'ax' is local
         try:
-            # We use a restricted context for eval
-            # We provide 'ax' so the evaluated string can call methods on it
             safe_dict = {"ax": ax, "__builtins__": {}}
             eval(f"ax.{method_name}({args_str})", safe_dict)
         except Exception as e:
