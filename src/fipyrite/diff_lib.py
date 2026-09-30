@@ -1236,7 +1236,7 @@ def add_implicit_sink(
     bulk_rate = rate * fac
     LHS[species] = LHS[species] - coeff * fac
     RATES[species] -= bulk_rate
-    if reaction is not None:
+    if reaction is not None and not getattr(mp, "in_solver", False):
         key = f"r_{reaction}_{species}"
         if key not in RATES:
             RATES[key] = np.zeros_like(bulk_rate)
@@ -1262,7 +1262,7 @@ def add_explicit_source(
     RHS[species] = RHS[species] + scaled_rate
     if update_rates:
         RATES[species] += getattr(scaled_rate, "value", scaled_rate)
-    if reaction is not None:
+    if reaction is not None and not getattr(mp, "in_solver", False):
         key = f"r_{reaction}_{species}"
         if key not in RATES:
             RATES[key] = np.zeros_like(scaled_rate)
@@ -1384,7 +1384,7 @@ def add_implicit_coupling_new(
     if add_lhs_sink:
         LHS[source_species] = LHS[source_species] - coeff * fac
         RATES[source_species] -= bulk_rate
-        if reaction is not None:
+        if reaction is not None and not getattr(mp, "in_solver", False):
             key_src = f"r_{reaction}_{source_species}"
             if key_src not in RATES:
                 RATES[key_src] = np.zeros_like(bulk_rate)
@@ -1392,7 +1392,7 @@ def add_implicit_coupling_new(
 
     scaled_target_rate = bulk_rate * stoich_ratio
     RATES[target_species] += scaled_target_rate
-    if reaction is not None:
+    if reaction is not None and not getattr(mp, "in_solver", False):
         key_tgt = f"r_{reaction}_{target_species}"
         if key_tgt not in RATES:
             RATES[key_tgt] = np.zeros_like(scaled_target_rate)
@@ -1474,10 +1474,11 @@ def add_coupled_reaction(
     if master_species_name in RATES:
         RATES[master_species_name] -= bulk_rate_master
 
-    key_master = f"r_{reaction_name}_{master_species_name}"
-    if key_master not in RATES:
-        RATES[key_master] = np.zeros_like(bulk_rate_master)
-    RATES[key_master] -= bulk_rate_master
+    if not getattr(mp, "in_solver", False):
+        key_master = f"r_{reaction_name}_{master_species_name}"
+        if key_master not in RATES:
+            RATES[key_master] = np.zeros_like(bulk_rate_master)
+        RATES[key_master] -= bulk_rate_master
 
     # Helper for cross-coupling other species
     def couple_species(species, stoich_norm, sign):
@@ -1491,10 +1492,11 @@ def add_coupled_reaction(
         if species in RATES:
             RATES[species] += sign * bulk_rate
 
-        key = f"r_{reaction_name}_{species}"
-        if key not in RATES:
-            RATES[key] = np.zeros_like(bulk_rate)
-        RATES[key] += sign * bulk_rate
+        if not getattr(mp, "in_solver", False):
+            key = f"r_{reaction_name}_{species}"
+            if key not in RATES:
+                RATES[key] = np.zeros_like(bulk_rate)
+            RATES[key] += sign * bulk_rate
 
     # 5. Couple other reactants (consumed -> sign = -1.0)
     for spec, stoich_norm in reactants_norm.items():
