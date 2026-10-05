@@ -713,7 +713,26 @@ def run_non_steady_state_solver_coupled(
     z: np.ndarray,
     plot_queue: Optional[Any] = None,
 ) -> Tuple[int, float]:
-    """Solves the non-steady state ADR coupled reactive transport system using direct LAPACK assembly."""
+    """Solves the non-steady state ADR coupled reactive transport system using direct or monolithic solver."""
+    solver_choice = str(getattr(mp, "solver", getattr(mp, "solver_backend", "direct"))).lower()
+    if solver_choice == "monolithic":
+        from .monolithic_solver import run_non_steady_state_solver_monolithic
+
+        return run_non_steady_state_solver_monolithic(
+            mp=mp,
+            c=c,
+            species_list_full=species_list_full,
+            species_list_partial=species_list_partial,
+            k=k,
+            diagenetic_reactions=diagenetic_reactions,
+            equilibrium_reactions=equilibrium_reactions,
+            mesh=mesh,
+            D_mol=D_mol,
+            bc_map=bc_map,
+            z=z,
+            plot_queue=plot_queue,
+        )
+
     from .direct_assembled_solver import run_non_steady_state_solver_direct
 
     return run_non_steady_state_solver_direct(
