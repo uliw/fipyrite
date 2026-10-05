@@ -83,3 +83,43 @@ def test_compute_species_residual_wrms_accuracy():
 
     assert abs(val_wrms - expected_wrms) < 1e-12
     assert abs(val_linf - expected_linf) < 1e-12
+
+
+def test_solve_block_tridiagonal_thomas_accuracy():
+    """Verify solve_block_tridiagonal_thomas matches dense scipy.linalg.solve to < 1e-12."""
+    from scipy.linalg import solve
+    from fipyrite.solvers_numba import solve_block_tridiagonal_thomas
+
+    rng = np.random.default_rng(42)
+
+    for N, S in [(3, 2), (5, 4), (50, 5), (100, 10)]:
+        A = -rng.uniform(0.1, 1.0, (N, S))
+        C = -rng.uniform(0.1, 1.0, (N, S))
+        B = rng.uniform(-0.2, 0.2, (N, S, S))
+        for i in range(N):
+            for r in range(S):
+                B[i, r, r] += 4.0 + abs(A[i, r]) + abs(C[i, r])
+        D = rng.uniform(1.0, 5.0, (N, S))
+
+        out = np.zeros((N, S), dtype=np.float64)
+        C_prime = np.zeros((N, S, S), dtype=np.float64)
+        D_prime = np.zeros((N, S), dtype=np.float64)
+
+        solve_block_tridiagonal_thomas(A, B, C, D, out, C_prime, D_prime)
+
+        # Assemble full (N*S, N*S) dense matrix for comparison
+        K = np.zeros((N * S, N * S), dtype=np.float64)
+        RHS_full = np.zeros(N * S, dtype=np.float64)
+        for i in range(N):
+            K[i * S : (i + 1) * S, i * S : (i + 1) * S] = B[i]
+            if i > 0:
+                for r in range(S):
+                    K[i * S + r, (i - 1) * S + r] = A[i, r]
+            if i < N - 1:
+                for r in range(S):
+                    K[i * S + r, (i + 1) * S + r] = C[i, r]
+            RHS_full[i * S : (i + 1) * S] = D[i]
+
+        expected = solve(K, RHS_full).reshape((N, S))
+        max_err = np.max(np.abs(out - expected))
+        assert max_err < 1e-11, f"Failed for N={N}, S={S}: max_err={max_err}"
