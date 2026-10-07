@@ -13,6 +13,7 @@ from __future__ import annotations
 import gc
 import math
 import os
+import sys
 import time
 import traceback
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
@@ -235,6 +236,23 @@ def run_non_steady_state_solver_monolithic(
 
     f_res_scratch = data_container()
 
+    # Chemical Jacobian evaluation strategy (Analytical SymPy vs Vectorized Finite Difference)
+    use_numerical_jacobian = getattr(mp, "use_numerical_jacobian", False)
+    jacobian_fn = None if use_numerical_jacobian else getattr(mp, "jacobian_fn", None)
+    if jacobian_fn is None and not use_numerical_jacobian:
+        jacobian_fn = getattr(diagenetic_reactions, "compute_chemical_jacobian", None)
+    if jacobian_fn is None and not use_numerical_jacobian:
+        rxn_mod = getattr(diagenetic_reactions, "__module__", None)
+        if rxn_mod and rxn_mod in sys.modules:
+            jacobian_fn = getattr(sys.modules[rxn_mod], "compute_chemical_jacobian", None)
+
+    if jacobian_fn is not None:
+        _log("Monolithic solver: Analytical chemical Jacobian enabled.")
+        print("Monolithic solver: Analytical chemical Jacobian enabled.")
+    else:
+        _log("Monolithic solver: Finite-difference chemical Jacobian enabled.")
+        print("Monolithic solver: Finite-difference chemical Jacobian enabled.")
+
     def _eval_rates(u_eval: np.ndarray, dt_step: float) -> Dict[str, np.ndarray]:
         """Evaluates bulk reaction rates for a given concentration state."""
         for s_idx, s_name in enumerate(mono_system.species_names):
@@ -292,25 +310,30 @@ def run_non_steady_state_solver_monolithic(
                                 r_bulk = np.asarray(r_bulk.value)
                             R[:, s_idx] -= mono_system.vol * r_bulk
 
-                        # 3. Form Chemical Jacobian J_chem[:, s, m] = dR_s / dC_m via vectorized perturbation
-                        mono_system.J_chem.fill(0.0)
-                        eps_rel = 1e-7
-                        for m_idx, m_name in enumerate(mono_system.species_names):
-                            cm = u_curr[:, m_idx]
-                            delta_m = eps_rel * np.maximum(np.abs(cm), 1e-6)
+                        # 3. Form Chemical Jacobian J_chem[:, s, m] = dR_s / dC_m
+                        if jacobian_fn is not None:
+                            mono_system.J_chem[:] = jacobian_fn(
+                                c_numpy, mp_numpy, k, mono_system.species_names
+                            )
+                        else:
+                            mono_system.J_chem.fill(0.0)
+                            eps_rel = 1e-7
+                            for m_idx, m_name in enumerate(mono_system.species_names):
+                                cm = u_curr[:, m_idx]
+                                delta_m = eps_rel * np.maximum(np.abs(cm), 1e-6)
 
-                            u_curr[:, m_idx] += delta_m
-                            rates_pert = _eval_rates(u_curr, current_dt)
-                            u_curr[:, m_idx] -= delta_m
+                                u_curr[:, m_idx] += delta_m
+                                rates_pert = _eval_rates(u_curr, current_dt)
+                                u_curr[:, m_idx] -= delta_m
 
-                            for s_idx, s_name in enumerate(mono_system.species_names):
-                                r_p = rates_pert.get(s_name, 0.0)
-                                r_b = rates_base.get(s_name, 0.0)
-                                if hasattr(r_p, "value"):
-                                    r_p = np.asarray(r_p.value)
-                                if hasattr(r_b, "value"):
-                                    r_b = np.asarray(r_b.value)
-                                mono_system.J_chem[:, s_idx, m_idx] = (r_p - r_b) / delta_m
+                                for s_idx, s_name in enumerate(mono_system.species_names):
+                                    r_p = rates_pert.get(s_name, 0.0)
+                                    r_b = rates_base.get(s_name, 0.0)
+                                    if hasattr(r_p, "value"):
+                                        r_p = np.asarray(r_p.value)
+                                    if hasattr(r_b, "value"):
+                                        r_b = np.asarray(r_b.value)
+                                    mono_system.J_chem[:, s_idx, m_idx] = (r_p - r_b) / delta_m
 
                         # 4. Assemble Block Tridiagonal Matrix B_i
                         # B_i[s, m] = delta_{sm} * (eff_phi_vol / dt + B_trans) - vol * J_chem[s, m]
@@ -336,18 +359,7 @@ def run_non_steady_state_solver_monolithic(
                             mono_system.D_prime,
                         )
 
-                        # 6. Check convergence on Newton update delta_u
-                        raw_wrms_err = 0.0
-                        for s_idx in range(S):
-                            err_s = compute_species_residual_wrms(
-                                u_curr[:, s_idx] + mono_system.delta_u[:, s_idx],
-                                u_curr[:, s_idx],
-                                inner_tol=newton_tol,
-                                atol=1e-12,
-                            )
-                            raw_wrms_err = max(raw_wrms_err, err_s)
-
-                        # 7. Backtracking line search with non-negativity protection
+                        # 6. Backtracking line search with non-negativity protection
                         res_norm_curr = np.sqrt(np.mean(R**2))
                         alpha = 1.0
                         u_best = u_curr.copy()
@@ -379,6 +391,18 @@ def run_non_steady_state_solver_monolithic(
                             u_best = u_trial
                             best_alpha = alpha
 
+                        # 7. Check convergence on actual projected step
+                        raw_wrms_err = 0.0
+                        newton_atol = float(getattr(mp, "newton_atol", 1e-6))
+                        for s_idx in range(S):
+                            err_s = compute_species_residual_wrms(
+                                u_best[:, s_idx],
+                                u_curr[:, s_idx],
+                                inner_tol=newton_tol,
+                                atol=newton_atol,
+                            )
+                            raw_wrms_err = max(raw_wrms_err, err_s)
+
                         u_curr[:] = u_best
 
                         if getattr(mp, "verbose", False):
@@ -395,7 +419,8 @@ def run_non_steady_state_solver_monolithic(
                                 flush=True,
                             )
 
-                        if raw_wrms_err <= 1.0:
+                        res_tol = float(getattr(mp, "newton_res_tol", 1e-12))
+                        if raw_wrms_err <= 1.0 or min_res_norm <= res_tol:
                             step_converged = True
                             last_iters = iter_idx
                             break
