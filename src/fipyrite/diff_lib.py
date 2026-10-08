@@ -532,7 +532,7 @@ def make_grid(L, initial_spacing, max_spacing, r=1.05):
     return mesh, z_centers
 
 
-def save_data(mp, c, k, species_list, z, D_mol, diagenetic_reactions, equilibrium_reactions):
+def save_data(mp, c, k, species_list, z, D_mol, diagenetic_reactions, equilibrium_reactions=None):
     """
     Save the model results to a CSV file (Synchronous).
     """
@@ -540,9 +540,7 @@ def save_data(mp, c, k, species_list, z, D_mol, diagenetic_reactions, equilibriu
     mp_numpy = data_container(mp)
     mp_numpy.phi = ArrayProxy(mp.phi.value)
     f_final, RATES = diagenetic_reactions(mp_numpy, c_numpy, k, data_container())
-    f_final, RATES = equilibrium_reactions(
-        mp, c, k, f_final, RATES, getattr(mp, "current_dt", 0.0)
-    )
+   
     return _save_data_to_disk(mp, c, k, species_list, z, D_mol, f_final)
 
 
