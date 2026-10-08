@@ -23,6 +23,8 @@ def parse_time_to_seconds(val: Any) -> Optional[float]:
     """
     if val is None:
         return None
+    if isinstance(val, str) and val.strip().lower() in ("none", "false", ""):
+        return None
     if isinstance(val, (int, float)):
         return float(val)
     if hasattr(val, "to") and hasattr(val, "magnitude"):

@@ -1021,6 +1021,302 @@ def check_peclet_numbers(mesh, mp, D_mol, species_list, bc_map):
                 )
 
 
+def check_reactant_coexistence(
+    mesh_or_z,
+    c,
+    reaction_pairs: list[dict] | None = None,
+    k: Any = None,
+    D_mol: Any = None,
+    threshold_rel: float = 0.05,
+    min_cells_resolved: int = 3,
+    verbose: bool = True,
+) -> list[dict]:
+    """Analyze post-simulation concentration profiles for numerical reactant co-existence.
+
+    Evaluates whether steep reaction fronts (e.g. oxic-anoxic transition, FeS precipitation)
+    are adequately resolved by the mesh or suffer from artificial numerical mixing within
+    discrete grid cells.
+
+    Parameters
+    ----------
+    mesh_or_z : Mesh1D, np.ndarray, or tuple
+        FiPy 1D Mesh object, 1D numpy array of cell center coordinates (z in meters),
+        or tuple (z, dz).
+    c : dict or data_container
+        Mapping of species names (or variable objects) to concentration arrays.
+    reaction_pairs : list of dict, optional
+        Custom list of reaction definitions to check. If None, default diagenetic
+        redox/precipitation pairs are checked (TS2+O2, fe2+O2, fe2+TS2, Fe3+TS2, CH4+SO4).
+        Each dict can specify:
+            - 'name': str, human-readable name of reaction
+            - 'sp_A': str, reactant A species name or alias
+            - 'sp_B': str, reactant B species name or alias
+            - 'k': float (optional), rate constant (phase/model units)
+            - 'k_key': str (optional), attribute name in k object
+            - 'D_eff': float (optional), effective diffusion coefficient (m^2/s)
+    k : object or dict, optional
+        Reaction constants container or dictionary.
+    D_mol : object or dict, optional
+        Diffusion coefficients container or dictionary.
+    threshold_rel : float, optional
+        Fraction of maximum reaction rate proxy used to demarcate the active front (default 0.05).
+    min_cells_resolved : int, optional
+        Minimum number of grid cells required to span the front for adequate spatial resolution (default 3).
+    verbose : bool, optional
+        Whether to print diagnostic messages and warnings (default True).
+
+    Returns
+    -------
+    list of dict
+        Diagnostic report for each active reaction front found.
+    """
+    # 1. Extract coordinates and cell widths
+    if hasattr(mesh_or_z, "dx") and hasattr(mesh_or_z, "cellCenters"):
+        dz = np.asarray(getattr(mesh_or_z.dx, "value", mesh_or_z.dx), dtype=float)
+        cc = getattr(mesh_or_z.cellCenters, "value", mesh_or_z.cellCenters)
+        if isinstance(cc, np.ndarray) and cc.ndim > 1:
+            z = np.asarray(cc[0], dtype=float)
+        elif hasattr(cc, "__getitem__"):
+            first = cc[0]
+            z = np.asarray(getattr(first, "value", first), dtype=float)
+        else:
+            z = np.asarray(getattr(cc, "value", cc), dtype=float)
+        if dz.ndim == 0 or len(dz) != len(z):
+            dz = np.full_like(z, float(dz) if dz.ndim == 0 else float(dz[0]))
+    elif isinstance(mesh_or_z, tuple) and len(mesh_or_z) == 2:
+        z = np.asarray(mesh_or_z[0], dtype=float)
+        dz = np.asarray(mesh_or_z[1], dtype=float)
+    else:
+        z = np.asarray(mesh_or_z, dtype=float)
+        dz = np.empty_like(z)
+        if len(z) <= 1:
+            dz = np.ones_like(z)
+        else:
+            dz[0] = 2.0 * z[0] if z[0] > 0 else (z[1] - z[0])
+            dz[1:-1] = 0.5 * (z[2:] - z[:-2])
+            dz[-1] = z[-1] - z[-2]
+
+    # 2. Helper to extract species concentration array with aliases
+    def _get_species_array(name: str):
+        candidates = [name, f"c_{name}", name.lower(), name.upper()]
+        if name in ("TS2", "h2s", "c_h2s", "c_TS2"):
+            candidates += ["TS2", "c_TS2", "h2s", "c_h2s", "HS", "H2S"]
+        elif name in ("fe2", "Fe2", "fe2_total", "Fe2_total", "Fe2_liq"):
+            candidates += ["fe2", "c_fe2", "Fe2", "fe2_total", "Fe2_total", "Fe2_liq"]
+        elif name in ("Fe3", "c_Fe3"):
+            candidates += ["Fe3", "c_Fe3", "Fe3_total"]
+        elif name in ("O2", "c_O2"):
+            candidates += ["O2", "c_O2"]
+        elif name in ("SO4", "c_SO4"):
+            candidates += ["SO4", "c_SO4"]
+        elif name in ("CH4", "c_CH4"):
+            candidates += ["CH4", "c_CH4"]
+
+        for cand in candidates:
+            val = None
+            if isinstance(c, dict) and cand in c:
+                val = c[cand]
+            elif hasattr(c, cand):
+                val = getattr(c, cand)
+            if val is not None:
+                arr = getattr(val, "value", val)
+                return np.asarray(arr, dtype=float)
+        return None
+
+    # 3. Default reaction pairs if not explicitly passed
+    if reaction_pairs is None:
+        reaction_pairs = [
+            {
+                "name": "Sulfide Oxidation by O2",
+                "sp_A": "TS2",
+                "sp_B": "O2",
+                "k_key": "TS2_O2",
+            },
+            {
+                "name": "Fe2 Oxidation by O2",
+                "sp_A": "fe2",
+                "sp_B": "O2",
+                "k_key": "fe2_O2",
+            },
+            {
+                "name": "FeS Precipitation (Fe2 + TS2)",
+                "sp_A": "fe2",
+                "sp_B": "TS2",
+                "k_key": "fe2_h2s",
+            },
+            {
+                "name": "Iron Reduction by Sulfide (Fe3 + TS2)",
+                "sp_A": "Fe3",
+                "sp_B": "TS2",
+                "k_key": "Fe3_TS2",
+            },
+            {
+                "name": "Methane Oxidation by SO4 (SMTZ)",
+                "sp_A": "CH4",
+                "sp_B": "SO4",
+                "k_key": "CH4_SO4",
+            },
+        ]
+
+    results = []
+    warnings_found = []
+
+    for rxn in reaction_pairs:
+        name = rxn["name"]
+        sp_a = rxn["sp_A"]
+        sp_b = rxn["sp_B"]
+
+        ca = _get_species_array(sp_a)
+        cb = _get_species_array(sp_b)
+
+        if ca is None or cb is None:
+            continue
+
+        r_proxy = ca * cb
+        r_max = float(np.max(r_proxy))
+
+        if r_max <= 1e-20:
+            continue  # Inactive or non-intersecting front
+
+        front_mask = r_proxy >= (threshold_rel * r_max)
+        n_cells = int(np.sum(front_mask))
+        idx_peak = int(np.argmax(r_proxy))
+
+        z_peak = float(z[idx_peak])
+        dz_peak = float(dz[idx_peak])
+
+        total_flux = float(np.sum(r_proxy * dz))
+        peak_cell_flux_frac = float((r_proxy[idx_peak] * dz_peak) / (total_flux + 1e-30))
+
+        # Resolve rate constant and diffusion coefficient only if explicitly provided
+        k_val = rxn.get("k")
+        if k_val is None and k is not None:
+            k_key = rxn.get("k_key")
+            k_candidates = [k_key] if k_key else []
+            if k_key == "fe2_O2":
+                k_candidates += ["Fe2_O2", "fe2_O2"]
+            elif k_key == "Fe3_TS2":
+                k_candidates += ["Fe3_hs", "Fe3_TS2", "Fe3_h2s"]
+            elif k_key == "fe2_h2s":
+                k_candidates += ["FeS_isp", "fe2_h2s", "FeS_TS2"]
+
+            for cand in k_candidates:
+                if hasattr(k, cand):
+                    k_val = getattr(k, cand)
+                    break
+                elif isinstance(k, dict) and cand in k:
+                    k_val = k[cand]
+                    break
+
+        d_eff = rxn.get("D_eff")
+        if d_eff is None and D_mol is not None:
+            cand_list = [sp_a, sp_b, sp_a.upper(), sp_b.upper(), sp_a.lower(), sp_b.lower()]
+            if sp_a in ("fe2", "Fe2") or sp_b in ("fe2", "Fe2"):
+                cand_list += ["Fe2_total", "fe2_total", "Fe2", "fe2"]
+            if sp_a in ("TS2", "h2s") or sp_b in ("TS2", "h2s"):
+                cand_list += ["TS2", "h2s"]
+
+            for sp_cand in cand_list:
+                if hasattr(D_mol, sp_cand):
+                    d_eff = getattr(D_mol, sp_cand)
+                    break
+                elif isinstance(D_mol, dict) and sp_cand in D_mol:
+                    d_eff = D_mol[sp_cand]
+                    break
+
+        # Extract local scalars at idx_peak (supports depth-dependent arrays)
+        k_local = None
+        if k_val is not None:
+            k_arr = getattr(k_val, "value", k_val)
+            if hasattr(k_arr, "__getitem__") and not np.isscalar(k_arr):
+                k_local = float(k_arr[idx_peak])
+            else:
+                k_local = float(k_arr)
+
+        d_local = None
+        if d_eff is not None:
+            d_arr = getattr(d_eff, "value", d_eff)
+            if hasattr(d_arr, "__getitem__") and not np.isscalar(d_arr):
+                d_local = float(d_arr[idx_peak])
+            else:
+                d_local = float(d_arr)
+            # Add bioturbation profile if present in D_mol
+            if D_mol is not None and hasattr(D_mol, "D_bio"):
+                dbio = getattr(D_mol.D_bio, "value", D_mol.D_bio)
+                if hasattr(dbio, "__getitem__") and not np.isscalar(dbio):
+                    d_local += float(dbio[idx_peak])
+                elif dbio is not None:
+                    d_local += float(dbio)
+
+        c_scale = max(float(np.max(ca)), float(np.max(cb)))
+        delta_phys = None
+        da_ii = None
+        if k_local is not None and d_local is not None and k_local > 0 and c_scale > 0:
+            delta_phys = float(np.sqrt(d_local / (k_local * c_scale + 1e-30)))
+            da_ii = float((k_local * c_scale * (dz_peak**2)) / (d_local + 1e-30))
+
+        # Check resolution criteria
+        is_warning = False
+        reasons = []
+        if n_cells < min_cells_resolved:
+            is_warning = True
+            reasons.append(f"Front span ({n_cells} cells) < recommended minimum ({min_cells_resolved})")
+        if peak_cell_flux_frac > 0.5:
+            is_warning = True
+            reasons.append(f"Peak cell contains {peak_cell_flux_frac * 100:.1f}% (>50%) of reaction flux")
+        if delta_phys is not None and dz_peak > (2.0 * delta_phys):
+            is_warning = True
+            reasons.append(f"Local grid cell dz ({dz_peak * 1e3:.2f} mm) > 2x physical front width ({delta_phys * 1e3:.2f} mm)")
+
+        z_front_min = float(np.min(z[front_mask]))
+        z_front_max = float(np.max(z[front_mask]))
+        target_dz = min(dz_peak * 0.33, 0.001)
+        if delta_phys is not None:
+            target_dz = min(target_dz, delta_phys * 0.5)
+
+        info = {
+            "name": name,
+            "sp_A": sp_a,
+            "sp_B": sp_b,
+            "z_peak": z_peak,
+            "dz_peak": dz_peak,
+            "front_bounds": (z_front_min, z_front_max),
+            "n_cells": n_cells,
+            "peak_flux_fraction": peak_cell_flux_frac,
+            "da_ii": da_ii,
+            "delta_phys": delta_phys,
+            "is_warning": is_warning,
+            "reasons": reasons,
+            "recommended_dz": target_dz,
+        }
+        results.append(info)
+
+        if is_warning:
+            da_ii_str = f"{da_ii:.1e}" if da_ii is not None else "N/A"
+            delta_phys_str = f"{delta_phys * 1e3:.2f} mm" if delta_phys is not None else "N/A"
+            msg = (
+                f"\n[WARNING: Numerical Reactant Co-existence Detected]\n"
+                f"  Reaction: '{name}' ({sp_a} + {sp_b})\n"
+                f"  Front location (peak): z = {z_peak * 100:.2f} cm (depth cell index: {idx_peak})\n"
+                f"  Local grid resolution: dz = {dz_peak * 1e3:.2f} mm\n"
+                f"  Estimated physical front width: {delta_phys_str}\n"
+                f"  Front cell span (N_cells): {n_cells} cell(s) (minimum recommended: >= {min_cells_resolved})\n"
+                f"  Peak cell flux fraction: {peak_cell_flux_frac * 100:.1f}%\n"
+                f"  Local spatial Damköhler (Da_II): {da_ii_str}\n"
+                f"  Reasons: {'; '.join(reasons)}\n"
+                f"  --> Action recommended: In make_grid2(), refine the mesh around z = [{z_front_min * 100:.2f}, {z_front_max * 100:.2f}] cm "
+                f"to reaction_zone_spacing <= {target_dz * 1e3:.2f} mm."
+            )
+            warnings_found.append(msg)
+            if verbose:
+                print(msg)
+
+    if verbose and not warnings_found:
+        print("[CHECK PASSED] All tested reaction fronts are adequately resolved (no numerical co-existence detected).")
+
+    return results
+
+
 def save_data_async(
     mp,
     c,
