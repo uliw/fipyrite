@@ -61,6 +61,7 @@ class ReactionSystemValidator:
         spec_species.loader.exec_module(mod_species)
         if hasattr(mod_species, "species") and isinstance(mod_species.species, dict):
             self.valid_species = set(mod_species.species.keys())
+            self.species_defs = mod_species.species
         else:
             raise ValueError(f"No 'species' dictionary found in {self.species_path}")
 
@@ -582,6 +583,79 @@ class EquationSystemGenerator:
         self.reactions = reactions
         self.validator = validator
 
+    @staticmethod
+    def classify_reaction(r: Dict[str, Any]) -> str:
+        """Classifies a chemical reaction based on its stoichiometry, reactants, and products,
+        completely independent of the user-assigned reaction name.
+        """
+        r_str = r.get("reaction", "")
+        if "->" not in r_str:
+            return "unknown"
+        try:
+            reactants, products = ReactionSystemValidator.parse_reaction_species(r_str)
+        except Exception:
+            return "unknown"
+
+        r_sp = [sp for _, sp in reactants]
+        p_sp = [sp for _, sp in products]
+        k_val = r.get("k_value_name")
+
+        # 1. Reversible precipitation / dissolution (e.g. FeS)
+        if isinstance(k_val, dict) and "precipitation" in k_val:
+            return "FeS_precipitation_dissolution"
+
+        # 2. Elemental sulfur disproportionation (S0 -> TS2 + SO4)
+        if "S0" in r_sp and "TS2" in p_sp and "SO4" in p_sp:
+            return "elemental_sulfur_disproportionation"
+
+        # 3. Aerobic respiration (POC + O2 -> CO2)
+        if "O2" in r_sp and any("POC" in sp for sp in r_sp):
+            return "aerobic_respiration"
+
+        # 4. Dissimilatory iron reduction (POC + Fe3 -> Fe2_total)
+        if "Fe3" in r_sp and any("POC" in sp for sp in r_sp):
+            return "dissimilatory_iron_reduction"
+
+        # 5. Sulfate reduction (POC + SO4 -> TS2)
+        if "SO4" in r_sp and any("POC" in sp for sp in r_sp):
+            return "sulfate_reduction"
+
+        # 6. Sulfide oxidation (HS + O2 -> SO4)
+        if any(sp in ("HS", "TS2") for sp in r_sp) and "O2" in r_sp and "SO4" in p_sp:
+            return "hs_oxidation"
+
+        # 7. Sulfide-mediated iron reduction
+        if any(sp in ("HS", "TS2") for sp in r_sp) and "Fe3" in r_sp:
+            if "SO4" in p_sp:
+                return "sulfide_mediated_iron_reduction_velde"
+            return "sulfide_mediated_iron_reduction"
+
+        # 8. Fe2 oxidation (Fe2 + O2 -> Fe3)
+        if any("Fe2" in sp for sp in r_sp) and "O2" in r_sp and "Fe3" in p_sp:
+            return "Fe2_oxidation"
+
+        # 9. FeS oxidation (FeS + O2 -> Fe3 + SO4)
+        if "FeS" in r_sp and "O2" in r_sp and ("Fe3" in p_sp or "SO4" in p_sp):
+            return "FeS_oxidation"
+
+        # 10. FeS2 oxidation (FeS2 + O2 -> Fe3 + SO4)
+        if "FeS2" in r_sp and "O2" in r_sp:
+            return "FeS2_oxidation"
+
+        # 11. Pyrite precipitation via HS/TS2 (FeS + HS -> FeS2)
+        if "FeS" in r_sp and any(sp in ("HS", "TS2") for sp in r_sp) and "FeS2" in p_sp:
+            return "FeS2_precipitation_TS2"
+
+        # 12. Pyrite formation via S0 (FeS + S0 -> FeS2)
+        if "FeS" in r_sp and "S0" in r_sp and "FeS2" in p_sp:
+            return "pyrite_formation_fes_s0"
+
+        # 13. Elemental sulfur oxidation (S0 + O2 -> SO4)
+        if "S0" in r_sp and "O2" in r_sp and "SO4" in p_sp:
+            return "elemental_sulfur_oxidation"
+
+        return "unknown"
+
     def generate_code(self) -> str:
         """Generates complete Python source for equations.py."""
         code = [
@@ -880,8 +954,8 @@ class EquationSystemGenerator:
             '',
         ]
 
-        active_names = {r.get("reaction_name", "") for r in self.reactions}
-        if any(n in ("FeS2_oxidation", "pyrite_oxidation", "pyrite_oxidation_new") for n in active_names):
+        active_categories = {self.classify_reaction(r) for r in self.reactions}
+        if "FeS2_oxidation" in active_categories:
             code.extend([
                 'def FeS2_oxidation(c, k_val, lim, LHS, RHS, RATES, CROSS, mp):',
                 '    """Reaction: 1 FeS2 + 3.5 O2 -> 1 Fe3 + 2 SO4"""',
@@ -910,7 +984,7 @@ class EquationSystemGenerator:
                 '',
             ])
 
-        if any(n in ("FeS2_precipitation_TS2", "pyrite_formation_fes_ts2_new", "pyrite_formation_FeS_TS2", "pyrite_formation_fes_ts2", "FeS2_precipitation") for n in active_names):
+        if "FeS2_precipitation_TS2" in active_categories:
             code.extend([
                 'def FeS2_precipitation_TS2(c, k_val, lim, LHS, RHS, RATES, CROSS, mp):',
                 '    """Reaction: 1 FeS + 1 HS -> 1 FeS2"""',
@@ -951,7 +1025,7 @@ class EquationSystemGenerator:
                 '',
             ])
 
-        if any(n in ("elemental_sulfur_oxidation",) for n in active_names):
+        if "elemental_sulfur_oxidation" in active_categories:
             code.extend([
                 'def elemental_sulfur_oxidation(c, k_val, lim, LHS, RHS, RATES, CROSS, mp):',
                 '    """Reaction: 2 S0 + 3 O2 -> 2 SO4"""',
@@ -979,7 +1053,7 @@ class EquationSystemGenerator:
                 '',
             ])
 
-        if any(n in ("pyrite_formation_fes_s0_new", "pyrite_formation_S0", "pyrite_formation_fes_s0") for n in active_names):
+        if "pyrite_formation_fes_s0" in active_categories:
             code.extend([
                 'def pyrite_formation_fes_s0_new(c, k_val, lim, LHS, RHS, RATES, CROSS, mp):',
                 '    """Reaction: 1 FeS + 1 S0 -> 1 FeS2"""',
@@ -1016,7 +1090,7 @@ class EquationSystemGenerator:
                 '',
             ])
 
-        if any(n == "sulfide_mediated_iron_reduction" for n in active_names):
+        if "sulfide_mediated_iron_reduction" in active_categories:
             code.extend([
                 'def sulfide_mediated_iron_reduction(c, k_val, lim, LHS, RHS, RATES, CROSS, mp):',
                 '    """Reaction: HS + 2 Fe3 -> S0 + 2 Fe2_total"""',
@@ -1047,7 +1121,7 @@ class EquationSystemGenerator:
                 '',
             ])
 
-        if any(n in ("elemental_sulfur_disproportionation", "S0_disproportionation") for n in active_names):
+        if "elemental_sulfur_disproportionation" in active_categories:
             code.extend([
                 'def elemental_sulfur_disproportionation(c, k_val, lim, LHS, RHS, RATES, CROSS, mp):',
                 '    """Reaction: 4 S0 + 4 H2O -> 3 TS2 + SO4 + 2 Hplus"""',
@@ -1086,46 +1160,50 @@ class EquationSystemGenerator:
         ])
 
         for r in self.reactions:
-            r_name = r.get("reaction_name", "")
+            cat = self.classify_reaction(r)
+            reactants, _ = ReactionSystemValidator.parse_reaction_species(r.get("reaction", ""))
             k_name = r.get("k_value_name")
-            if "aerobic_respiration" in r_name:
-                poc_sp = "POC_slow" if "slow" in r_name else "POC_fast"
+
+            if cat == "aerobic_respiration":
+                poc_sp = next((sp for _, sp in reactants if "POC" in sp), "POC_fast")
                 poc_k = k_name if isinstance(k_name, str) else poc_sp
                 code.append(f'    [aerobic_respiration, {{"poc_species": "{poc_sp}", "poc_k": "{poc_k}"}}],')
-            elif "dissimilatory_iron_reduction" in r_name:
-                poc_sp = "POC_slow" if "slow" in r_name else "POC_fast"
+            elif cat == "dissimilatory_iron_reduction":
+                poc_sp = next((sp for _, sp in reactants if "POC" in sp), "POC_fast")
                 poc_k = k_name if isinstance(k_name, str) else poc_sp
                 code.append(f'    [dissimilatory_iron_reduction, {{"poc_species": "{poc_sp}", "poc_k": "{poc_k}"}}],')
-            elif "sulfate_reduction" in r_name:
-                poc_sp = "POC_slow" if "slow" in r_name else "POC_fast"
+            elif cat == "sulfate_reduction":
+                poc_sp = next((sp for _, sp in reactants if "POC" in sp), "POC_fast")
                 poc_k = k_name if isinstance(k_name, str) else poc_sp
                 code.append(f'    [sulfate_reduction, {{"poc_species": "{poc_sp}", "poc_k": "{poc_k}"}}],')
-            elif r_name in ("hs_oxidation", "hs_oxidation_velde"):
+            elif cat == "hs_oxidation":
                 code.append('    [hs_oxidation_velde, None],')
-            elif r_name == "Fe2_oxidation":
+            elif cat == "Fe2_oxidation":
                 code.append('    [Fe2_oxidation, None],')
-            elif r_name == "sulfide_mediated_iron_reduction_velde":
+            elif cat == "sulfide_mediated_iron_reduction_velde":
                 code.append('    [sulfide_mediated_iron_reduction_velde, None],')
-            elif r_name == "sulfide_mediated_iron_reduction":
+            elif cat == "sulfide_mediated_iron_reduction":
                 code.append('    [sulfide_mediated_iron_reduction, None],')
-            elif r_name in ("FeS_precipitation_dissolution", "FeS_precipitation_dissolution_smooth_transition"):
+            elif cat == "FeS_precipitation_dissolution":
                 code.append('    [FeS_precipitation_dissolution_smooth_transition, None],')
-            elif r_name == "FeS_oxidation":
+            elif cat == "FeS_oxidation":
                 code.append('    [FeS_oxidation, None],')
-            elif r_name in ("FeS2_oxidation", "pyrite_oxidation", "pyrite_oxidation_new"):
+            elif cat == "FeS2_oxidation":
                 code.append('    [FeS2_oxidation, None],')
-            elif r_name in ("FeS2_precipitation_TS2", "pyrite_formation_fes_ts2_new", "pyrite_formation_FeS_TS2", "pyrite_formation_fes_ts2", "FeS2_precipitation"):
+            elif cat == "FeS2_precipitation_TS2":
                 code.append('    [FeS2_precipitation_TS2, None],')
-            elif r_name in ("elemental_sulfur_oxidation",):
+            elif cat == "elemental_sulfur_oxidation":
                 code.append('    [elemental_sulfur_oxidation, None],')
-            elif r_name in ("pyrite_formation_fes_s0_new", "pyrite_formation_S0", "pyrite_formation_fes_s0"):
+            elif cat == "pyrite_formation_fes_s0":
                 code.append('    [pyrite_formation_fes_s0_new, None],')
-            elif r_name in ("elemental_sulfur_disproportionation", "S0_disproportionation"):
+            elif cat == "elemental_sulfur_disproportionation":
                 code.append('    [elemental_sulfur_disproportionation, None],')
             else:
+                r_name = r.get("reaction_name", "unnamed")
                 raise ValueError(
-                    f"Unable to generate reaction '{r_name}': reaction is not recognized by the equation system generator. "
-                    f"Please check for typos in the reaction name or implement its generation rule."
+                    f"Unable to generate reaction '{r_name}' ('{r.get('reaction', '')}'): "
+                    f"reaction stoichiometry is not recognized by the equation system generator. "
+                    f"Please check the chemical reaction equation or implement its generation rule."
                 )
 
         code.extend([
@@ -1187,9 +1265,9 @@ class EquationSystemGenerator:
             '',
         ])
 
-        active_rxn_names = {r.get("reaction_name", "") for r in self.reactions}
+        active_categories = {self.classify_reaction(r) for r in self.reactions}
 
-        if any("aerobic_respiration" in name for name in active_rxn_names):
+        if "aerobic_respiration" in active_categories:
             code.extend([
                 '    # 1. Aerobic respiration (fast & slow)',
                 '    for poc_sp in ["POC_fast", "POC_slow"]:',
@@ -1211,7 +1289,7 @@ class EquationSystemGenerator:
                 '',
             ])
 
-        if any("dissimilatory_iron_reduction" in name for name in active_rxn_names):
+        if "dissimilatory_iron_reduction" in active_categories:
             code.extend([
                 '    # 2. Dissimilatory iron reduction (fast & slow)',
                 '    for poc_sp in ["POC_fast", "POC_slow"]:',
@@ -1244,7 +1322,7 @@ class EquationSystemGenerator:
                 '',
             ])
 
-        if any("sulfate_reduction" in name for name in active_rxn_names):
+        if "sulfate_reduction" in active_categories:
             code.extend([
                 '    # 3. Sulfate reduction (fast & slow)',
                 '    for poc_sp in ["POC_fast", "POC_slow"]:',
@@ -1283,7 +1361,7 @@ class EquationSystemGenerator:
                 '',
             ])
 
-        if any(name in ("FeS_precipitation_dissolution", "FeS_precipitation_dissolution_smooth_transition") for name in active_rxn_names):
+        if "FeS_precipitation_dissolution" in active_categories:
             code.extend([
                 '    # 4. FeS precipitation / dissolution (smooth transition)',
                 '    if "Fe2_total" in idx and "TS2" in idx and "FeS" in idx:',
@@ -1383,7 +1461,7 @@ class EquationSystemGenerator:
                 '',
             ])
 
-        if any(name in ("hs_oxidation", "hs_oxidation_velde") for name in active_rxn_names):
+        if "hs_oxidation" in active_categories:
             code.extend([
                 '    # 5. HS oxidation (hs_oxidation_velde)',
                 '    if "TS2" in idx and "O2" in idx and "SO4" in idx:',
@@ -1418,7 +1496,7 @@ class EquationSystemGenerator:
                 '',
             ])
 
-        if any(name == "Fe2_oxidation" for name in active_rxn_names):
+        if "Fe2_oxidation" in active_categories:
             code.extend([
                 '    # 6. Fe2 oxidation (Fe2_oxidation)',
                 '    if "Fe2_total" in idx and "O2" in idx and "Fe3" in idx:',
@@ -1439,7 +1517,7 @@ class EquationSystemGenerator:
                 '',
             ])
 
-        if any(name in ("sulfide_mediated_iron_reduction", "sulfide_mediated_iron_reduction_velde") for name in active_rxn_names):
+        if any(cat in active_categories for cat in ("sulfide_mediated_iron_reduction", "sulfide_mediated_iron_reduction_velde")):
             code.extend([
                 '    # 7. Sulfide-mediated iron reduction (sulfide_mediated_iron_reduction_velde)',
                 '    if "TS2" in idx and "Fe3" in idx and "Fe2_total" in idx and "SO4" in idx:',
@@ -1474,7 +1552,7 @@ class EquationSystemGenerator:
                 '',
             ])
 
-        if any(name == "FeS_oxidation" for name in active_rxn_names):
+        if "FeS_oxidation" in active_categories:
             code.extend([
                 '    # 8. FeS oxidation (FeS_oxidation)',
                 '    if "FeS" in idx and "O2" in idx and "Fe3" in idx and "SO4" in idx:',
@@ -1503,7 +1581,7 @@ class EquationSystemGenerator:
                 '',
             ])
 
-        if any(name in ("FeS2_oxidation", "pyrite_oxidation", "pyrite_oxidation_new") for name in active_rxn_names):
+        if "FeS2_oxidation" in active_categories:
             code.extend([
                 '    # 9. FeS2 oxidation (FeS2_oxidation)',
                 '    if "FeS2" in idx and "O2" in idx and "Fe3" in idx and "SO4" in idx:',
@@ -1532,7 +1610,7 @@ class EquationSystemGenerator:
                 '',
             ])
 
-        if any(name in ("FeS2_precipitation_TS2", "pyrite_formation_fes_ts2_new", "pyrite_formation_FeS_TS2", "pyrite_formation_fes_ts2", "FeS2_precipitation") for name in active_rxn_names):
+        if "FeS2_precipitation_TS2" in active_categories:
             code.extend([
                 '    # 10. FeS2 precipitation via TS2 (FeS2_precipitation_TS2)',
                 '    if "FeS" in idx and "TS2" in idx and "FeS2" in idx:',
@@ -1562,7 +1640,7 @@ class EquationSystemGenerator:
                 '',
             ])
 
-        if any(name == "elemental_sulfur_oxidation" for name in active_rxn_names):
+        if "elemental_sulfur_oxidation" in active_categories:
             code.extend([
                 '    # 11. Elemental sulfur oxidation (elemental_sulfur_oxidation)',
                 '    if "S0" in idx and "O2" in idx and "SO4" in idx:',
@@ -1588,7 +1666,7 @@ class EquationSystemGenerator:
                 '',
             ])
 
-        if any(name in ("pyrite_formation_fes_s0_new", "pyrite_formation_S0", "pyrite_formation_fes_s0") for name in active_rxn_names):
+        if "pyrite_formation_fes_s0" in active_categories:
             code.extend([
                 '    # 12. Pyrite formation via S0 (pyrite_formation_fes_s0_new)',
                 '    if "FeS" in idx and "S0" in idx and "FeS2" in idx:',
@@ -1617,7 +1695,7 @@ class EquationSystemGenerator:
                 '',
             ])
 
-        if any(name in ("elemental_sulfur_disproportionation", "S0_disproportionation") for name in active_rxn_names):
+        if "elemental_sulfur_disproportionation" in active_categories:
             code.extend([
                 '    # 13. Elemental sulfur disproportionation',
                 '    if "S0" in idx and "TS2" in idx and "SO4" in idx:',
