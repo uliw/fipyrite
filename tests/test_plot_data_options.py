@@ -191,3 +191,56 @@ def test_broken_axis_method():
     assert ax._broken_y_info["y1"] == -35.0
     assert ax._broken_y_info["y2"] == 20.0
     plt.close(fig)
+
+
+def test_species_delta_thresholding():
+    from fipyrite.diff_lib import get_delta, get_species_delta_threshold, is_solid_species
+
+    class DummyMP:
+        phi = 0.8
+        VCDT = 0.045
+        bc_map = {
+            "FeS": {"type": "particulate"},
+            "SO4": {"type": "dissolved"},
+        }
+
+    mp = DummyMP()
+
+    # Verify solid vs liquid classification
+    assert is_solid_species("FeS", mp) is True
+    assert is_solid_species("SO4", mp) is False
+    assert is_solid_species("FeS2", mp) is True
+    assert is_solid_species("TS2", mp) is False
+
+    # Verify default threshold values
+    # For liquids: 0.001 mmol/L
+    assert get_species_delta_threshold("SO4", mp) == 0.001
+    # For solids: 0.001 * phi / (1 - phi) = 0.001 * 0.8 / 0.2 = 0.004 mmol/L
+    np.testing.assert_allclose(get_species_delta_threshold("FeS", mp), 0.004)
+
+    # Test species-specific override: e.g. TS2_delta_threshold and FeS_delta_threshold
+    mp.TS2_delta_threshold = 0.0005
+    assert get_species_delta_threshold("TS2", mp) == 0.0005
+    assert get_species_delta_threshold("TS2_32", mp) == 0.0005
+
+    mp.FeS_delta_threshold = 0.05
+    assert get_species_delta_threshold("FeS", mp) == 0.05
+    assert get_species_delta_threshold("FeS_32", mp) == 0.05
+
+    # Verify get_delta threshold masking
+    c_total = np.array([0.0001, 0.002, 0.05])
+    c_32 = c_total / (1.0 + DummyMP.VCDT)  # zero delta
+
+    # Using liquid threshold 0.001: only index 0 is below threshold
+    d_liq = get_delta(c_total, c_32, DummyMP.VCDT, threshold=0.001)
+    assert np.isnan(d_liq[0])
+    assert not np.isnan(d_liq[1])
+    assert not np.isnan(d_liq[2])
+
+    # Using solid threshold 0.004: indices 0 and 1 are below threshold
+    d_sol = get_delta(c_total, c_32, DummyMP.VCDT, threshold=0.004)
+    assert np.isnan(d_sol[0])
+    assert np.isnan(d_sol[1])
+    assert not np.isnan(d_sol[2])
+
+

@@ -297,7 +297,7 @@ def test_fes2_precipitation_ts2_generation():
 
 
 def test_unrecognized_reaction_raises_value_error():
-    """Verify that an unrecognized reaction name raises a ValueError instead of logging a warning."""
+    """Verify that an unrecognized reaction stoichiometry raises a ValueError."""
     from fipyrite.generate_equation_system import EquationSystemGenerator
 
     validator = ReactionSystemValidator(
@@ -308,7 +308,7 @@ def test_unrecognized_reaction_raises_value_error():
     reactions = [
         {
             "reaction_name": "unknown_typo_reaction",
-            "reaction": "POC_fast + O2 -> CO2",
+            "reaction": "POC_fast + Fe2_total -> CO2",
             "k_value_name": "POC_fast",
         },
     ]
@@ -316,6 +316,34 @@ def test_unrecognized_reaction_raises_value_error():
     generator = EquationSystemGenerator(reactions=reactions, validator=validator)
     with pytest.raises(ValueError, match="Unable to generate reaction 'unknown_typo_reaction'"):
         generator.generate_code()
+
+
+def test_arbitrary_reaction_name_classified_and_generated():
+    """Verify that reaction names are arbitrary and reactions are classified by stoichiometry."""
+    from fipyrite.generate_equation_system import EquationSystemGenerator
+
+    validator = ReactionSystemValidator(
+        species_path=SPECIES_FILE,
+        constants_path=CONSTANTS_FILE,
+        limiters_path=LIMITERS_FILE,
+    )
+    reactions = [
+        {
+            "reaction_name": "my_arbitrary_fe3_reduction_name",
+            "reaction": "POC_fast + 4 Fe3 -> 4 Fe2_total",
+            "k_value_name": "POC_fast",
+        },
+    ]
+
+    generator = EquationSystemGenerator(reactions=reactions, validator=validator)
+    code = generator.generate_code()
+    assert "def dissimilatory_iron_reduction" in code
+    assert "dissimilatory_iron_reduction" in code
+    assert "compute_chemical_jacobian" in code
+    # Check that Jacobian includes iron reduction derivative terms
+    jac_start = code.find("def compute_chemical_jacobian")
+    jacobian_code = code[jac_start:]
+    assert "2. Dissimilatory iron reduction" in jacobian_code
 
 
 def test_missing_reactions_file_raises_filenotfound(tmp_path):
