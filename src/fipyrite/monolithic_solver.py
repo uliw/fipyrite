@@ -392,16 +392,25 @@ def run_non_steady_state_solver_monolithic(
                             best_alpha = alpha
 
                         # 7. Check convergence on actual projected step
-                        raw_wrms_err = 0.0
+                        raw_newton_err = 0.0
                         newton_atol = float(getattr(mp, "newton_atol", 1e-6))
+                        is_wrms = (newton_norm == "wrms")
                         for s_idx in range(S):
-                            err_s = compute_species_residual_wrms(
-                                u_best[:, s_idx],
-                                u_curr[:, s_idx],
-                                inner_tol=newton_tol,
-                                atol=newton_atol,
-                            )
-                            raw_wrms_err = max(raw_wrms_err, err_s)
+                            if is_wrms:
+                                err_s = compute_species_residual_wrms(
+                                    u_best[:, s_idx],
+                                    u_curr[:, s_idx],
+                                    inner_tol=newton_tol,
+                                    atol=newton_atol,
+                                )
+                            else:
+                                err_s = compute_species_residual_linf(
+                                    u_best[:, s_idx],
+                                    u_curr[:, s_idx],
+                                    inner_tol=newton_tol,
+                                    atol=newton_atol,
+                                )
+                            raw_newton_err = max(raw_newton_err, err_s)
 
                         u_curr[:] = u_best
 
@@ -415,23 +424,19 @@ def run_non_steady_state_solver_monolithic(
                                 f"  [Iter {iter_idx}] max_R={np.max(np.abs(R)):.2e}, "
                                 f"res_norm={min_res_norm:.2e}, "
                                 f"max_du={np.max(np.abs(mono_system.delta_u)):.2e} ({top_sp}), "
-                                f"alpha={best_alpha:.3f}, wrms={raw_wrms_err:.2e}",
+                                f"alpha={best_alpha:.3f}, err={raw_newton_err:.2e} ({newton_norm})",
                                 flush=True,
                             )
 
                         res_tol = float(getattr(mp, "newton_res_tol", 1e-12))
-                        if raw_wrms_err <= 1.0 or min_res_norm <= res_tol:
+                        if raw_newton_err <= 1.0 or min_res_norm <= res_tol:
                             step_converged = True
                             last_iters = iter_idx
                             break
 
-                        if iter_idx == max_newton_iters:
-                            step_converged = True
-                            last_iters = iter_idx
-
                     if not step_converged:
                         raise RuntimeError(
-                            f"Newton iteration failed to converge in {max_newton_iters} iterations (err={raw_wrms_err:.2e})"
+                            f"Newton iteration failed to converge in {max_newton_iters} iterations (err={raw_newton_err:.2e})"
                         )
 
                 except Exception as ex:

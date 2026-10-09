@@ -248,18 +248,18 @@ def diff_coeff(T, m0, m1, phi):
     return (m0 + m1 * T) * 1e-10 / (1 - np.log(phi_val**2))
 
 
-def get_delta(c, li, r):
+def get_delta(c, li, r, threshold: Union[float, np.ndarray, None] = 1e-6):
     """Calculate the delta from the mass of light and heavy isotope.
 
+    :param c: total mass/concentration
     :param li: light isotope mass/concentration
-    :param h: heavy isotope mass/concentration
     :param r: reference ratio
+    :param threshold: concentration threshold below which delta is undefined (NaN).
+                      Can be a float or array matching c/li. Defaults to 1e-6.
 
     :return : delta
 
     """
-    #    import numpy
-
     with np.errstate(divide="ignore", invalid="ignore"):
         # 1. Numerical Safeguards
         # Ensure total mass 'c' is at least 'li' (light isotope) to avoid negative heavy mass
@@ -271,8 +271,8 @@ def get_delta(c, li, r):
         ratio = h / li_safe
 
         # 2. Thresholding for NaN
-        # If light isotope concentration is below 1 nmol/L (1e-6 mmol/L), delta is undefined (NaN)
-        d = np.where(li < 1e-6, np.nan, 1000 * (ratio - r) / r)
+        thresh = 1e-6 if threshold is None else threshold
+        d = np.where(li < thresh, np.nan, 1000 * (ratio - r) / r)
 
         # 3. Clipping Extreme Values
         d = np.clip(d, -1000.0, 1000.0)
@@ -280,23 +280,128 @@ def get_delta(c, li, r):
     return d
 
 
-def get_delta_from_concentration(c, li, r):
+def get_delta_from_concentration(c, li, r, threshold: Union[float, np.ndarray, None] = 1e-6):
     """Calculate the delta from the mass of light and heavy isotope.
 
     :param c: total mass/concentration
     :param li: light isotope mass/concentration
     :param r: reference ratio
-
+    :param threshold: concentration threshold below which delta is undefined (NaN).
+                      Can be a float or array matching c/li. Defaults to 1e-6.
     """
     with np.errstate(divide="ignore", invalid="ignore"):
         li_safe = np.maximum(li, 1e-30)
         c_safe = np.maximum(c, li_safe)
         h = c_safe - li_safe
         ratio = h / li_safe
-        d = np.where(li < 1e-6, np.nan, 1000 * (ratio - r) / r)
+        thresh = 1e-6 if threshold is None else threshold
+        d = np.where(li < thresh, np.nan, 1000 * (ratio - r) / r)
         d = np.clip(d, -1000.0, 1000.0)
 
     return d
+
+
+def is_solid_species(species_name: str, mp: Any = None) -> bool:
+    """Determine whether a chemical species is in the solid/particulate phase.
+
+    Checks (in priority order):
+    1. mp.bc_map: if species has 'type' in ('particulate', 'solid')
+    2. mp.species or mp.species_defs: if species dict has 'solid': True
+    3. Standard diagenetic species conventions (FeS, FeS2, S0, Fe3, POC are solid;
+       SO4, TS2, h2s, hs, Fe2_total, O2 are dissolved/liquid).
+    """
+    if not species_name:
+        return False
+
+    base_name = species_name.replace("_32", "")
+
+    if mp is not None:
+        # 1. Check mp.bc_map
+        bc_map = getattr(mp, "bc_map", None)
+        if isinstance(bc_map, dict):
+            for candidate in (species_name, base_name):
+                if candidate in bc_map and isinstance(bc_map[candidate], dict):
+                    sp_type = str(bc_map[candidate].get("type", "")).lower()
+                    if sp_type in ("particulate", "solid"):
+                        return True
+                    if sp_type in ("dissolved", "liquid"):
+                        return False
+
+        # 2. Check mp.species or mp.species_defs
+        for attr in ("species", "species_defs"):
+            sp_dict = getattr(mp, attr, None)
+            if isinstance(sp_dict, dict):
+                for candidate in (species_name, base_name):
+                    if candidate in sp_dict and isinstance(sp_dict[candidate], dict):
+                        is_sol = sp_dict[candidate].get("solid")
+                        if is_sol is not None:
+                            return bool(is_sol)
+
+    # 3. Known convention fallback
+    known_solids = {"FeS", "FeS2", "S0", "Fe3", "POC", "POC_fast", "POC_slow"}
+    known_liquids = {"SO4", "TS2", "h2s", "hs", "H2S", "HS", "Fe2_total", "O2"}
+
+    if base_name in known_solids:
+        return True
+    if base_name in known_liquids:
+        return False
+
+    return False
+
+
+def get_species_delta_threshold(
+    species_name: str,
+    mp: Any = None,
+    phi: Any = None,
+) -> Union[float, np.ndarray]:
+    """Computes concentration threshold for isotope delta calculation based on species type.
+
+    Precedence:
+    1. Species-specific parameter: <speciesname>_delta_threshold (e.g. TS2_delta_threshold).
+    2. Phase-specific override: mp.delta_threshold_solid or mp.delta_threshold_liquid.
+    3. Defaults:
+       - Liquids: 0.001 mmol/L (1 umol/L porewater).
+       - Solids: bulk-equivalent concentration: thresh_liq * phi / (1 - phi) mmol/L (solid).
+    """
+    if not species_name:
+        return 0.001
+
+    base_name = species_name.replace("_32", "")
+
+    # 1. Species-specific override on mp
+    if mp is not None:
+        for candidate in (
+            f"{species_name}_delta_threshold",
+            f"{base_name}_delta_threshold",
+            f"{species_name.lower()}_delta_threshold",
+            f"{base_name.lower()}_delta_threshold",
+        ):
+            val = getattr(mp, candidate, None) if hasattr(mp, candidate) else (mp.get(candidate) if isinstance(mp, dict) else None)
+            if val is not None:
+                return float(val)
+
+    # 2. Phase-specific overrides / defaults
+    thresh_liq = float(getattr(mp, "delta_threshold_liquid", 0.001)) if mp is not None else 0.001
+
+    if is_solid_species(species_name, mp=mp):
+        custom_solid = getattr(mp, "delta_threshold_solid", None) if mp is not None else None
+        if custom_solid is not None:
+            return float(custom_solid)
+
+        # Bulk equivalent: C_bulk = C_solid * (1 - phi) = C_liquid * phi
+        # -> C_solid = C_liquid * phi / (1 - phi)
+        if phi is None and mp is not None:
+            phi = getattr(mp, "phi", None)
+        if hasattr(phi, "value"):
+            phi = phi.value
+        if phi is not None:
+            phi_arr = np.asarray(phi, dtype=float)
+            denom = np.maximum(1.0 - phi_arr, 1e-12)
+            return thresh_liq * phi_arr / denom
+        return thresh_liq * 4.0  # default phi=0.8 fallback -> thresh_liq * (0.8 / 0.2) = 0.004
+    else:
+        return thresh_liq
+
 
 
 def get_l_mass(m, d, r):
@@ -586,13 +691,16 @@ def _save_data_to_disk(mp, c, k, species_list, z, D_mol, f_final):
         "FeS2": "FeS2_32",
     }
 
+    phi_val = data.get("phi", getattr(mp, "phi", None))
+
     for base, iso in isotope_map.items():
         if f"c_{base}" in data and f"c_{iso}" in data:
             s_total = data[f"c_{base}"]
             if base == "FeS2":
                 s_total = 2.0 * s_total
             s32 = data[f"c_{iso}"]
-            data[f"d_{base}"] = get_delta(s_total, s32, mp.VCDT)
+            thresh = get_species_delta_threshold(base, mp=mp, phi=phi_val)
+            data[f"d_{base}"] = get_delta(s_total, s32, mp.VCDT, threshold=thresh)
 
     data["w"] = np.ones(len(z)) * mp.w
     data["phi"] = np.ones(len(z)) * mp.phi

@@ -518,8 +518,7 @@ def _report_step_status(
     last_report_wall: Optional[float] = None,
     last_report_time: Optional[float] = None,
 ) -> None:
-    """Logs current step status parameters and triggers async data/plot saving."""
-    from .diff_lib import get_delta, get_total_delta
+    from .diff_lib import get_delta, get_species_delta_threshold, get_total_delta
     
     phi = mp.phi
     dz = np.diff(z)
@@ -551,17 +550,19 @@ def _report_step_status(
             pace = interval_wall / max(report_n, 1)
             sim_speed = _format_sim_speed(interval_sim, interval_wall)
             perf_str = f" | {pace:.2f} s/step, {sim_speed}" if sim_speed else f" | {pace:.2f} s/step"
-
+            
     if mp.isotopes:
         d34s = get_total_delta(c, mp)
-        fes_mask = c.FeS.value > 1e-3
-        d_fes = get_delta(c.FeS.value[fes_mask], c.FeS_32.value[fes_mask], mp.VCDT) if np.any(fes_mask) else np.array([])
+        phi_val = getattr(mp.phi, "value", mp.phi)
+
+        thresh_fes = get_species_delta_threshold("FeS", mp=mp, phi=phi_val)
+        d_fes = get_delta(c.FeS.value, c.FeS_32.value, mp.VCDT, threshold=thresh_fes)
         v_fes = d_fes[~np.isnan(d_fes)]
         min_dFeS = float(np.min(v_fes)) if len(v_fes) > 0 else np.nan
         max_dFeS = float(np.max(v_fes)) if len(v_fes) > 0 else np.nan
 
-        ts2_mask = c.TS2.value > 1e-3
-        d_ts2 = get_delta(c.TS2.value[ts2_mask], c.TS2_32.value[ts2_mask], mp.VCDT) if np.any(ts2_mask) else np.array([])
+        thresh_ts2 = get_species_delta_threshold("TS2", mp=mp, phi=phi_val)
+        d_ts2 = get_delta(c.TS2.value, c.TS2_32.value, mp.VCDT, threshold=thresh_ts2)
         v_ts2 = d_ts2[~np.isnan(d_ts2)]
         min_dTS2 = float(np.min(v_ts2)) if len(v_ts2) > 0 else np.nan
         max_dTS2 = float(np.max(v_ts2)) if len(v_ts2) > 0 else np.nan
