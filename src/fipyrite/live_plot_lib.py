@@ -159,8 +159,10 @@ class LivePlotter:
         title: Optional[str] = None,
         gui: bool = False,
         report_step: int = 1,
-        max_queue_size: int = 20,
-        resume_threshold: int = 10,
+        max_queue_size: int = 100,
+        resume_threshold: int = 50,
+        video_dpi: int = 120,
+        video_workers: Optional[int] = None,
     ):
         self.layout_path = layout_path
         self.display_length = display_length
@@ -168,32 +170,88 @@ class LivePlotter:
         self.output_path = output_path
         self.video_path = video_path
         self.fps = fps
-        self.codec = "libvpx-vp9"
+        self.codec = "libopenh264"
         self.gui = gui
         self.report_step = report_step
         self.max_queue_size = max_queue_size
         self.resume_threshold = resume_threshold
-        # Use 'spawn' to avoid inheriting PETSc/MPI signal handlers and state
-        self._ctx = mp.get_context("spawn")
-        self._queue = BoundedVideoQueue(
-            maxsize=max_queue_size,
-            resume_threshold=resume_threshold,
-            ctx=self._ctx,
-        )
-        self._process: Optional[mp.Process] = None
+        self.video_dpi = video_dpi
+        self.video_workers = video_workers
         self.title = title
+
+        if self.video_path and not self.gui:
+            from fipyrite.parallel_video import ParallelVideoManager
+
+            self._backend: Optional[ParallelVideoManager] = ParallelVideoManager(
+                layout_path=self.layout_path,
+                display_length=self.display_length,
+                video_path=self.video_path,
+                measured_data_path=self.measured_data_path,
+                fps=self.fps,
+                video_dpi=self.video_dpi,
+                video_workers=self.video_workers,
+                max_queue_size=self.max_queue_size,
+                resume_threshold=self.resume_threshold,
+            )
+            self._queue = None
+            self._ctx = None
+        else:
+            self._backend = None
+            # Use 'spawn' to avoid inheriting PETSc/MPI signal handlers and state
+            self._ctx = mp.get_context("spawn")
+            self._queue = BoundedVideoQueue(
+                maxsize=max_queue_size,
+                resume_threshold=resume_threshold,
+                ctx=self._ctx,
+            )
+        self._process: Optional[mp.Process] = None
 
     @property
     def queue(self):
+        if self._backend is not None:
+            return self._backend.queue
         return self._queue
 
     def start(self) -> None:
-        """Launch the background plotting process."""
-        self._process = self._ctx.Process(target=self._run_plot_loop, daemon=False)
-        self._process.start()
+        """Launch the background plotting process / parallel video pipeline."""
+        if self._backend is not None:
+            self._backend.start()
+        else:
+            self._process = self._ctx.Process(target=self._run_plot_loop, daemon=False)
+            self._process.start()
 
     def stop(self) -> None:
-        """Stop the background plotting process."""
+        """Stop the background plotting process / parallel video pipeline."""
+        if self._backend is not None:
+            self._backend.stop()
+            if (
+                self.output_path
+                and hasattr(self._backend.queue, "last_snapshot")
+                and self._backend.queue.last_snapshot
+            ):
+                try:
+                    import fipyrite.plot_data_new as plot_data_new
+
+                    data, title = self._backend.queue.last_snapshot
+                    df = pd.DataFrame(data)
+                    plt_desc = plot_data_new.load_layout_from_file(
+                        df, self.layout_path, self.measured_data_path
+                    )
+                    print(f"[LivePlotter] Saving final plot to {self.output_path}", flush=True)
+                    plot_data_new.plot(
+                        df,
+                        self.display_length,
+                        outfile=self.output_path,
+                        show=False,
+                        plot_description=plt_desc,
+                        measured_data_path=self.measured_data_path,
+                        keep_open=False,
+                        title=title or self.title,
+                    )
+                except Exception as e:
+                    print(f"[LivePlotter] Failed to save final plot: {e}", flush=True)
+            return
+
         if self._process and self._process.is_alive():
             try:
                 self._queue.put(None, timeout=2)  # Sentinel for exit
@@ -204,11 +262,12 @@ class LivePlotter:
                 self._process.terminate()
                 self._process.join(timeout=2)
         # Prevent Python atexit from hanging on queue flush thread
-        try:
-            self._queue.cancel_join_thread()
-            self._queue.close()
-        except Exception:
-            pass
+        if self._queue is not None:
+            try:
+                self._queue.cancel_join_thread()
+                self._queue.close()
+            except Exception:
+                pass
 
     def _run_plot_loop(self) -> None:
         """Internal loop running in the background process."""
