@@ -554,6 +554,7 @@ class DiageneticModel:
         spec.loader.exec_module(mod)
         if not hasattr(mod, "species") or not isinstance(mod.species, dict):
             raise ValueError(f"Species file {self.species_file} must define a 'species' dictionary.")
+        self._species_mod = mod
         return mod.species
 
     def setup(self, plot_queue=None) -> Tuple[data_container, data_container, data_container, List[str], np.ndarray, data_container, Any]:
@@ -564,12 +565,13 @@ class DiageneticModel:
         # 1. Parse species definitions
         species_defs = self._load_species_definitions()
 
-        # 2. Extract pH from Hplus if present
-        if "Hplus" in species_defs and "bc" in species_defs["Hplus"]:
-            h_bc = species_defs["Hplus"]["bc"]
-            if isinstance(h_bc, dict) and "pH" in h_bc:
-                if "pH" not in self.p_dict:
-                    self.mp.pH = float(h_bc["pH"])
+        # 2. Extract pH from species definitions (e.g. Hplus or any species defining 'pH' under 'bc')
+        if "pH" not in self.p_dict:
+            for sp_k, s_meta in species_defs.items():
+                s_bc = s_meta.get("bc")
+                if isinstance(s_bc, dict) and "pH" in s_bc:
+                    self.mp.pH = float(s_bc["pH"])
+                    break
 
         # 3. Compile or load reaction equations
         prep_dict = dict(self.mp)
@@ -629,15 +631,56 @@ class DiageneticModel:
         phi_val = self.mp.phi.value if hasattr(self.mp.phi, "value") else self.mp.phi
         self.mp.fac_s = phi_val / (1.0 - phi_val)
 
-        # Sorption / speciation fractions
-        self.mp.Fe2_diss = 1.0 / (1.0 + k.Fe2_p_eq) if hasattr(k, "Fe2_p_eq") else 1.0
-        self.mp.Fe2_sorb = (k.Fe2_p_eq * self.mp.fac_s * self.mp.Fe2_diss) if hasattr(k, "Fe2_p_eq") else 0.0
+        # Dynamic speciation & phase partition calculations from species_defs
+        Hplus = 10.0 ** (-float(self.mp.pH))
+        eval_ctx: Dict[str, Any] = {
+            "k": k,
+            "mp": self.mp,
+            "np": np,
+            "Hplus": Hplus,
+            "pH": float(self.mp.pH),
+            "fac_s": self.mp.fac_s,
+        }
 
-        pKa1 = 7.0
-        Ka1 = 10 ** (-pKa1)
-        H_conc = 10 ** (-self.mp.pH)
-        self.mp.h2s_frac = H_conc / (H_conc + Ka1)
-        self.mp.hs_frac = Ka1 / (H_conc + Ka1)
+        for sp_name, meta in species_defs.items():
+            # Check partition for mixed species (e.g. Fe2_total: dissolved, sorbed)
+            if "partition" in meta and isinstance(meta["partition"], dict):
+                for p_key, p_expr in meta["partition"].items():
+                    val = float(eval(p_expr, eval_ctx))
+                    setattr(self.mp, f"{sp_name}_{p_key}", val)
+                    eval_ctx[f"{sp_name}_{p_key}"] = val
+                    # Backwards compatibility alias for Fe2_total.dissolved -> Fe2_diss
+                    if sp_name == "Fe2_total" and p_key == "dissolved":
+                        self.mp.Fe2_diss = val
+                        eval_ctx["Fe2_diss"] = val
+                    elif sp_name == "Fe2_total" and p_key == "sorbed":
+                        self.mp.Fe2_sorb = val * self.mp.fac_s
+                        eval_ctx["Fe2_sorb"] = self.mp.Fe2_sorb
+
+            # Check fraction for equilibrium speciation (e.g. HS: Ka1 / (Hplus + Ka1))
+            if "fraction" in meta:
+                frac_ctx = dict(eval_ctx)
+                if "constants" in meta and isinstance(meta["constants"], dict):
+                    for c_name, c_val in meta["constants"].items():
+                        frac_ctx[c_name] = float(c_val)
+                        if c_name.startswith("pK"):
+                            base_c = c_name[1:]
+                            frac_ctx[base_c] = 10.0 ** (-float(c_val))
+                f_val = float(eval(meta["fraction"], frac_ctx))
+                setattr(self.mp, f"{sp_name.lower()}_frac", f_val)
+                eval_ctx[f"{sp_name.lower()}_frac"] = f_val
+
+        # Ensure fallback defaults if not specified in species_defs
+        if not hasattr(self.mp, "Fe2_diss"):
+            self.mp.Fe2_diss = 1.0 / (1.0 + k.Fe2_p_eq) if hasattr(k, "Fe2_p_eq") else 1.0
+        if not hasattr(self.mp, "Fe2_sorb"):
+            self.mp.Fe2_sorb = (k.Fe2_p_eq * self.mp.fac_s * self.mp.Fe2_diss) if hasattr(k, "Fe2_p_eq") else 0.0
+        if not hasattr(self.mp, "hs_frac"):
+            Ka1 = 10.0 ** (-7.0)
+            self.mp.hs_frac = Ka1 / (Hplus + Ka1)
+        if not hasattr(self.mp, "h2s_frac"):
+            Ka1 = 10.0 ** (-7.0)
+            self.mp.h2s_frac = Hplus / (Hplus + Ka1)
 
         # Initialize CellVariables
         zeros = np.zeros(self.mp.grid_points)
@@ -682,65 +725,100 @@ class DiageneticModel:
                     bc_map[sp_k]["top"] = float(ov)
 
         # 8. Compute molecular diffusion coefficients from species recipes
+        # Import diff_lib module for diff_coeff functions
+        import fipyrite.diff_lib as diff_lib_mod
+
         for sp_name, meta in species_defs.items():
             diff_spec = meta.get("diffusion")
-            if diff_spec is None:
-                continue
+            fn_name = meta.get("diff_coeff_function")
+
+            # Check if this species inherits diffusion from another species
             if isinstance(diff_spec, str):
-                # Inherit from another species
                 if hasattr(D_mol, diff_spec):
                     setattr(D_mol, sp_name, getattr(D_mol, diff_spec))
-            elif isinstance(diff_spec, dict):
-                d_type = diff_spec.get("type", "diff_coeff")
-                if d_type == "diff_coeff":
-                    m0 = diff_spec.get("m0", 0.0)
-                    m1 = diff_spec.get("m1", 0.0)
-                    setattr(D_mol, sp_name, diff_coeff(T_profile, m0, m1, self.mp.phi))
-                elif d_type == "boudreau_o2":
-                    d_o2 = (
-                        (0.2604 + 0.006363 * ((T_profile + 273.15) / 1.0))
-                        * 1e-9
-                        / (1.0 - np.log(phi_val**2))
-                    )
-                    setattr(D_mol, sp_name, d_o2)
+                continue
 
-        # Lumped Fe2_total / mixed-phase diffusion scaling (porewater retardation)
+            # Determine function name from diff_coeff_function or dict 'type'
+            if fn_name is None and isinstance(diff_spec, dict):
+                fn_name = diff_spec.get("type", "diff_coeff")
+
+            if fn_name is not None:
+                # 1. Look up function in species.py module first, then diff_lib
+                diff_fn = None
+                if hasattr(self, "_species_mod") and hasattr(self._species_mod, fn_name):
+                    diff_fn = getattr(self._species_mod, fn_name)
+                elif hasattr(diff_lib_mod, fn_name):
+                    diff_fn = getattr(diff_lib_mod, fn_name)
+
+                if diff_fn is not None:
+                    sig = inspect.signature(diff_fn)
+                    kwargs = {}
+                    if "T" in sig.parameters:
+                        kwargs["T"] = T_profile
+                    if "T_profile" in sig.parameters:
+                        kwargs["T_profile"] = T_profile
+                    if "temp" in sig.parameters:
+                        kwargs["temp"] = T_profile
+                    if "phi" in sig.parameters:
+                        kwargs["phi"] = self.mp.phi
+                    if isinstance(diff_spec, dict):
+                        if "m0" in sig.parameters and "m0" in diff_spec:
+                            kwargs["m0"] = diff_spec["m0"]
+                        if "m1" in sig.parameters and "m1" in diff_spec:
+                            kwargs["m1"] = diff_spec["m1"]
+                    try:
+                        d_val = diff_fn(**kwargs)
+                        setattr(D_mol, sp_name, d_val)
+                    except Exception as e:
+                        raise RuntimeError(f"Failed to compute diffusion for '{sp_name}' with {fn_name}(): {e}")
+                else:
+                    raise AttributeError(f"Diffusion function '{fn_name}' for species '{sp_name}' not found in species.py or diff_lib.")
+
+        # Lumped mixed-phase diffusion scaling (porewater retardation)
         for sp_name, meta in species_defs.items():
             if meta.get("phase") == "mixed" and hasattr(D_mol, sp_name):
                 diss_frac = 1.0
-                if sp_name == "Fe2_total":
-                    diss_frac = getattr(self.mp, "Fe2_diss", 1.0)
+                part = meta.get("partition", {})
+                if "dissolved" in part:
+                    try:
+                        diss_frac = float(eval(part["dissolved"], eval_ctx))
+                    except Exception:
+                        diss_frac = getattr(self.mp, f"{sp_name}_dissolved", getattr(self.mp, "Fe2_diss", 1.0))
                 else:
-                    part = meta.get("partition", {})
-                    if "dissolved" in part:
-                        try:
-                            diss_frac = float(eval(part["dissolved"], {"k": k, "mp": self.mp, "np": np}))
-                        except Exception:
-                            diss_frac = 1.0
+                    diss_frac = getattr(self.mp, f"{sp_name}_dissolved", getattr(self.mp, "Fe2_diss", 1.0))
                 setattr(D_mol, sp_name, getattr(D_mol, sp_name) * diss_frac)
-
-        if hasattr(D_mol, "Fe2") and hasattr(D_mol, "Fe2_total"):
-            D_mol.Fe2_total = D_mol.Fe2 * getattr(self.mp, "Fe2_diss", 1.0)
 
         # Bioturbation & Bio-irrigation profiles
         D_mol.D_irr = compute_bio_irrigation_alpha(z, self.mp.BI0, self.mp.BI_depth)
         D_mol.D_bio = compute_sigmoidal_db(z, self.mp.BT0, self.mp.BT_depth, self.mp.BT_attenuation)
 
-        # 9. Isotope boundary conditions companion setup
+        # 9. Isotope boundary conditions companion setup (generalized across all species)
         if self.mp.isotopes:
-            if "SO4" in bc_map:
-                self.mp.bc_SO4_32 = get_l_mass(bc_map["SO4"]["top"], self.mp.SO4_d, self.mp.VCDT)
-                bc_map["SO4_32"] = {"top": self.mp.bc_SO4_32, "type": "dissolved"}
-            if "TS2" in bc_map:
-                self.mp.bc_TS2_32 = get_l_mass(bc_map["TS2"]["top"], 0.0, self.mp.VCDT)
-                bc_map["TS2_32"] = {"top": self.mp.bc_TS2_32, "type": "dissolved"}
-            if "S0" in bc_map:
-                self.mp.bc_S0_32 = get_l_mass(bc_map["S0"]["top"], getattr(self.mp, "S0_d", 8.0), self.mp.VCDT)
-                bc_map["S0_32"] = {"top": self.mp.bc_S0_32, "type": "particulate"}
-            if "FeS" in species_defs and "FeS_32" in species_defs:
-                bc_map["FeS_32"] = {"top": 0.0, "type": "particulate"}
-            if "FeS2" in species_defs and "FeS2_32" in species_defs:
-                bc_map["FeS2_32"] = {"top": 0.0, "type": "particulate"}
+            for sp_name, meta in species_defs.items():
+                iso_target = meta.get("isotope")
+                if not iso_target or iso_target not in species_defs:
+                    continue
+                # Determine delta value: from bc dict, or mp.<sp>_d, or 0.0 default
+                delta_val = None
+                sp_bc = meta.get("bc", {})
+                if isinstance(sp_bc, dict):
+                    if "delta" in sp_bc:
+                        delta_val = float(sp_bc["delta"])
+                if delta_val is None:
+                    delta_attr = f"{sp_name}_d"
+                    delta_val = float(getattr(self.mp, delta_attr, 0.0))
+
+                iso_meta = species_defs[iso_target]
+                iso_phase = iso_meta.get("phase", meta.get("phase", "liquid"))
+                iso_bc_type = "particulate" if iso_phase == "solid" else "dissolved"
+
+                if sp_name in bc_map and bc_map[sp_name]["top"] > 0.0:
+                    top_mass_32 = get_l_mass(bc_map[sp_name]["top"], delta_val, self.mp.VCDT)
+                    setattr(self.mp, f"bc_{iso_target}", top_mass_32)
+                    bc_map[iso_target] = {"top": top_mass_32, "type": iso_bc_type}
+                else:
+                    setattr(self.mp, f"bc_{iso_target}", 0.0)
+                    bc_map[iso_target] = {"top": 0.0, "type": iso_bc_type}
 
         # 10. Initial conditions and boundary constraints
         phi_top = phi_val[0] if hasattr(phi_val, "__getitem__") else phi_val

@@ -110,21 +110,31 @@ class ReactionSystemValidator:
 
         # 3. Limiters (from limiters_path or reactions_path)
         self.valid_limiters = set()
+        self.limiters_defs: Dict[str, str] = {}
+
+        def _extract_limiters_from_ast(tree: ast.AST):
+            extracted = {}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Subscript):
+                            if isinstance(target.value, ast.Name) and target.value.id == "limiters":
+                                if isinstance(target.slice, ast.Constant) and isinstance(target.slice.value, str):
+                                    expr_code = ast.unparse(node.value) if hasattr(ast, "unparse") else ""
+                                    extracted[target.slice.value] = expr_code
+                        elif isinstance(target, ast.Name) and target.id == "limiters":
+                            if isinstance(node.value, ast.Dict):
+                                for k_node, v_node in zip(node.value.keys, node.value.values):
+                                    if isinstance(k_node, ast.Constant) and isinstance(k_node.value, str):
+                                        expr_code = ast.unparse(v_node) if hasattr(ast, "unparse") else ""
+                                        extracted[k_node.value] = expr_code
+            return extracted
+
+        raw_limiters: Dict[str, str] = {}
         if self.limiters_path is not None and self.limiters_path.exists():
             try:
                 lim_tree = ast.parse(self.limiters_path.read_text(encoding="utf-8"))
-                for node in ast.walk(lim_tree):
-                    if isinstance(node, ast.Assign):
-                        for target in node.targets:
-                            if isinstance(target, ast.Subscript):
-                                if isinstance(target.value, ast.Name) and target.value.id == "limiters":
-                                    if isinstance(target.slice, ast.Constant) and isinstance(target.slice.value, str):
-                                        self.valid_limiters.add(target.slice.value)
-                            elif isinstance(target, ast.Name) and target.id == "limiters":
-                                if isinstance(node.value, ast.Dict):
-                                    for k in node.value.keys:
-                                        if isinstance(k, ast.Constant) and isinstance(k.value, str):
-                                            self.valid_limiters.add(k.value)
+                raw_limiters.update(_extract_limiters_from_ast(lim_tree))
             except Exception as e:
                 raise ValueError(f"Could not parse limiters file {self.limiters_path}: {e}")
 
@@ -132,16 +142,31 @@ class ReactionSystemValidator:
         if self.reactions_path is not None and self.reactions_path.exists():
             try:
                 rxn_tree = ast.parse(self.reactions_path.read_text(encoding="utf-8"))
-                for node in ast.walk(rxn_tree):
-                    if isinstance(node, ast.Assign):
-                        for target in node.targets:
-                            if isinstance(target, ast.Name) and target.id == "limiters":
-                                if isinstance(node.value, ast.Dict):
-                                    for k in node.value.keys:
-                                        if isinstance(k, ast.Constant) and isinstance(k.value, str):
-                                            self.valid_limiters.add(k.value)
+                raw_limiters.update(_extract_limiters_from_ast(rxn_tree))
             except Exception:
                 pass
+
+        # Expand limiters:
+        # Base implicit limiter L_imp = 1 / (C + K) -> derive _implicit, _explicit, _inhibit
+        for lim_name, expr in raw_limiters.items():
+            self.limiters_defs[lim_name] = expr
+            self.valid_limiters.add(lim_name)
+
+            # If defined as base form (e.g. 'O2' or 'SO4' or 'Fe3') or ending in '_implicit'
+            base_key = lim_name[:-9] if lim_name.endswith("_implicit") else lim_name
+
+            # Add implicit form
+            self.valid_limiters.add(f"{base_key}_implicit")
+            self.valid_limiters.add(f"{base_key}_explicit")
+            self.valid_limiters.add(f"{base_key}_inhibit")
+            self.valid_limiters.add(f"{base_key}_inhib")
+
+            if "_" in base_key:
+                main_k, sub_k = base_key.split("_", 1)
+                self.valid_limiters.add(f"{main_k}_implicit_{sub_k}")
+                self.valid_limiters.add(f"{main_k}_explicit_{sub_k}")
+                self.valid_limiters.add(f"{main_k}_inhibit_{sub_k}")
+                self.valid_limiters.add(f"{main_k}_inhib_{sub_k}")
 
     @staticmethod
     def parse_reaction_species(reaction_str: str) -> Tuple[List[Tuple[float, str]], List[Tuple[float, str]]]:
@@ -221,33 +246,49 @@ class ReactionSystemValidator:
             else:
                 errors.append(f"[{rxn_name}] Invalid k_value_name type: {type(k_val)}.")
 
-        # 3. Validate limiters
-        if limiters is not None:
-            if isinstance(limiters, dict):
-                for target_sp, lim_items in limiters.items():
+        # 3. Validate limiters & inhibitors
+        def _check_lim_entry(key_label: str, val: Any):
+            if val is None:
+                return
+            if isinstance(val, dict):
+                for target_sp, lim_items in val.items():
                     if target_sp not in known_local_species and target_sp != "global":
                         errors.append(
-                            f"[{rxn_name}] Limiter target species '{target_sp}' not defined in species.py or dynamic_variables."
+                            f"[{rxn_name}] {key_label} target species '{target_sp}' not defined in species.py or dynamic_variables."
                         )
                     item_list = [lim_items] if isinstance(lim_items, str) else lim_items
                     for lim_name in item_list:
-                        if lim_name not in self.valid_limiters:
+                        # Check bare name, _implicit, _inhibit, etc.
+                        if not any(
+                            cand in self.valid_limiters
+                            for cand in (lim_name, f"{lim_name}_implicit", f"{lim_name}_inhibit", f"{lim_name}_inhib")
+                        ):
                             errors.append(
-                                f"[{rxn_name}] Limiter '{lim_name}' not defined in limiters.py."
+                                f"[{rxn_name}] Fatal Error: {key_label} '{lim_name}' is not defined in the limiters specification or reactions file."
                             )
-            elif isinstance(limiters, list):
-                for lim_name in limiters:
-                    if lim_name not in self.valid_limiters:
+            elif isinstance(val, (list, tuple)):
+                for lim_name in val:
+                    if not any(
+                        cand in self.valid_limiters
+                        for cand in (lim_name, f"{lim_name}_implicit", f"{lim_name}_inhibit", f"{lim_name}_inhib")
+                    ):
                         errors.append(
-                            f"[{rxn_name}] Limiter '{lim_name}' not defined in limiters.py."
+                            f"[{rxn_name}] Fatal Error: {key_label} '{lim_name}' is not defined in the limiters specification or reactions file."
                         )
-            elif isinstance(limiters, str):
-                if limiters not in self.valid_limiters:
+            elif isinstance(val, str):
+                if not any(
+                    cand in self.valid_limiters
+                    for cand in (val, f"{val}_implicit", f"{val}_inhibit", f"{val}_inhib")
+                ):
                     errors.append(
-                        f"[{rxn_name}] Limiter '{limiters}' not defined in limiters.py."
+                        f"[{rxn_name}] Fatal Error: {key_label} '{val}' is not defined in the limiters specification or reactions file."
                     )
             else:
-                errors.append(f"[{rxn_name}] Invalid limiters format: {type(limiters)}.")
+                errors.append(f"[{rxn_name}] Invalid {key_label} format: {type(val)}.")
+
+        _check_lim_entry("Limiter", limiters)
+        inhibitors = rxn_dict.get("inhibitors")
+        _check_lim_entry("Inhibitor", inhibitors)
 
         # 4. Validate isotope mapping
         if iso_map:
@@ -718,7 +759,7 @@ class EquationSystemGenerator:
             '    _external_get_limiters = None',
             '',
             'def get_limiters(c, mp):',
-            '    """Calculates phase-corrected Monod and inhibition limiters for all species."""',
+            '    """Calculates phase-corrected Monod and inhibition limiters dynamically."""',
             '    if _external_get_limiters is not None:',
             '        return _external_get_limiters(c, mp)',
             '    phi = mp.phi.value if hasattr(mp.phi, "value") else mp.phi',
@@ -729,28 +770,45 @@ class EquationSystemGenerator:
             '    K_Fe3 = getattr(mp, "K_Fe3", 0.0) / solid_phi',
             '    K_Fe3_diss_red = getattr(mp, "K_Fe3_diss_red", 0.0) / solid_phi',
             '    limiters = {}',
-            '    if hasattr(c, "O2"):',
-            '        limiters["O2_implicit"] = 1.0 / (c.O2 + K_O2)',
-            '        limiters["O2_inhibit"] = K_O2 / (c.O2 + K_O2)',
-            '        if hasattr(mp, "K_O2_TS2"):',
-            '            limiters["O2_implicit_TS2"] = 1.0 / (c.O2 + mp.K_O2_TS2)',
-            '        else:',
-            '            limiters["O2_implicit_TS2"] = 1.0 / (c.O2 + K_O2)',
-            '    if hasattr(c, "TS2"):',
-            '        limiters["TS2"] = K_TS2 / (c.TS2 + K_TS2)',
-            '        K_eps_hs = getattr(mp, "K_epsilon_TS2_O2", 1e-3)',
-            '        limiters["TS2_alpha_explicit"] = c.TS2 / (c.TS2 + K_eps_hs)',
-            '    if hasattr(c, "SO4"):',
-            '        limiters["SO4_implicit"] = 1.0 / (c.SO4 + K_SO4)',
-            '        limiters["SO4_explicit"] = c.SO4 / (c.SO4 + K_SO4)',
-            '        K_eps_msr = getattr(mp, "K_epsilon_msr", 1e-3)',
-            '        limiters["SO4_alpha_explicit"] = c.SO4 / (c.SO4 + K_eps_msr)',
-            '    if hasattr(c, "Fe3"):',
-            '        fe3_val = c.Fe3.value if hasattr(c.Fe3, "value") else c.Fe3',
-            '        fe3_pos = np.maximum(fe3_val, 0.0)',
-            '        limiters["Fe3_implicit"] = 1.0 / (fe3_pos + K_Fe3)',
-            '        limiters["Fe3_diss_red_implicit"] = 1.0 / (fe3_pos + K_Fe3_diss_red)',
-            '        limiters["Fe3_diss_red_inhib"] = K_Fe3_diss_red / (fe3_pos + K_Fe3_diss_red)',
+        ]
+
+        # Dynamically emit limiters from validator.limiters_defs
+        for lim_name, expr in self.validator.limiters_defs.items():
+            base_key = lim_name[:-9] if lim_name.endswith("_implicit") else lim_name
+            clean_expr = expr.strip("'\"")
+
+            # Store the defined expression
+            code.append(f'    limiters["{lim_name}"] = {clean_expr}')
+
+            # Derive explicit and inhibition forms if base form or implicit form
+            code.append(f'    limiters["{base_key}_implicit"] = limiters["{lim_name}"]')
+            # Also support transposed naming convention e.g. O2_implicit_TS2 for O2_TS2
+            if "_" in base_key:
+                main_k, sub_k = base_key.split("_", 1)
+                code.append(f'    limiters["{main_k}_implicit_{sub_k}"] = limiters["{lim_name}"]')
+                code.append(f'    limiters["{main_k}_{sub_k}_implicit"] = limiters["{lim_name}"]')
+
+            # Extract target species name (e.g. c.O2 or np.maximum(c.Fe3, 0.0))
+            # If expr contains 1.0 / (X + K), explicit is X / (X + K) and inhibit is K / (X + K)
+            if "1.0 /" in clean_expr:
+                denom = clean_expr.split("1.0 /", 1)[1].strip()
+                # Remove outer parens if present
+                if denom.startswith("(") and denom.endswith(")"):
+                    inner = denom[1:-1].strip()
+                    parts = inner.split("+", 1)
+                    if len(parts) == 2:
+                        var_part = parts[0].strip()
+                        k_part = parts[1].strip()
+                        code.append(f'    limiters["{base_key}_explicit"] = ({var_part}) * limiters["{lim_name}"]')
+                        code.append(f'    limiters["{base_key}_inhibit"] = ({k_part}) * limiters["{lim_name}"]')
+                        code.append(f'    limiters["{base_key}_inhib"] = limiters["{base_key}_inhibit"]')
+                        if "_" in base_key:
+                            main_k, sub_k = base_key.split("_", 1)
+                            code.append(f'    limiters["{main_k}_explicit_{sub_k}"] = limiters["{base_key}_explicit"]')
+                            code.append(f'    limiters["{main_k}_inhibit_{sub_k}"] = limiters["{base_key}_inhibit"]')
+                            code.append(f'    limiters["{main_k}_inhib_{sub_k}"] = limiters["{base_key}_inhibit"]')
+
+        code.extend([
             '    return limiters',
             '',
             '# -----------------------------------------------------------------------------',
@@ -1027,8 +1085,7 @@ class EquationSystemGenerator:
             '            coeff=diss_coeff_FeS, rate=diss_rate_FeS * f32_FeS, mp=mp, has_solid=has_solid,',
             '            add_lhs_sink=True, stoich_ratio=1.0,',
             '        )',
-            '',
-        ]
+        ])
 
         active_categories = {self.classify_reaction(r) for r in self.reactions}
         if "FeS2_oxidation" in active_categories:
