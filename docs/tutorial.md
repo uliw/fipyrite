@@ -1,31 +1,3 @@
-- [Introduction: What is MANTIS?](#org5dbc758)
-- [Overall Model Architecture: What is Where?](#org4417d27)
-- [Step 1: Defining Chemical Species (`species.py`)](#orgc16f49a)
-  - [Understanding Phases: Dissolved vs. Solid vs. Mixed](#orgba057ca)
-  - [Example: Standard Species Configuration](#org10d01d0)
-  - [Handling Diffusion Coefficients](#orgd0812cc)
-    - [Custom Diffusion Functions (e.g., Dissolved Oxygen)](#org69559bb)
-- [Step 2: Defining Kinetic Constants (`kinetic_constants_*.py`)](#org809df99)
-  - [Structure of `kinetic_constants_slow.py`](#org3c64ffa)
-- [Step 3: Defining Reactions & Limiters (`fes_reactions.py`)](#org1fecbeb)
-  - [Understanding Limiters & Inhibitors](#org739ad2b)
-  - [Declaring Chemical Reactions](#org5336c1e)
-- [Step 4: The Master Run Script (`run_velde_model.py`)](#org21fe2f4)
-- [Step 5: Designing Plot Layouts (`plot_layout.py`)](#orgf185086)
-  - [Converting Model Units to Geochemical Units](#orgaefde21)
-  - [Defining Multi-Panel Profiles](#orgf5ff558)
-- [Step 6: Running the Model & Producing Time-Lapse Videos](#orge7acd7b)
-  - [Standard Execution](#orgee831e4)
-  - [Generating a Time-Lapse Video](#orgcf4fea3)
-  - [Command-Line Options Reference](#orgf872aa8)
-- [Solver Mechanics & Physical Realism (Geochemist's Alert!)](#orgfeddb58)
-  - [How to Ensure Physical Realism:](#org9a13232)
-- [Summary & Next Steps](#org0cb5c1f)
-
-
-
-<a id="org5dbc758"></a>
-
 # Introduction: What is MANTIS?
 
 Welcome to **MANTIS** (\*M\*onolithic \*A\*ssembly of \*N\*onlinear \*T\*ransport \*I\*nteractions \*S\*olver)! If you are a geochemist, sedimentologist, or marine geologist, you are likely familiar with the classic picture of early diagenesis in marine sediments:
