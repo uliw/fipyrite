@@ -39,7 +39,7 @@ from fipyrite.diff_lib import (
 )
 from fipyrite.generate_equation_system import resolve_and_prepare_equations
 from fipyrite.live_plot_lib import LivePlotter
-from fipyrite.solver_calls import run_non_steady_state_solver_coupled as run_solver
+from fipyrite.monolithic_solver import run_non_steady_state_solver_monolithic as run_solver
 
 
 class DiageneticModelResult:

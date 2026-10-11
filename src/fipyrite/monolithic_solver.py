@@ -16,6 +16,7 @@ import os
 import sys
 import time
 import traceback
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -29,17 +30,363 @@ from .diff_lib import (
     save_data_async,
     save_state,
 )
-from .direct_assembled_solver import (
-    GovernorStats,
-    build_native_1d_transport_stencil,
-)
 from .live_plot_lib import parse_time_to_seconds, save_final_pdf, write_to_queue_async
-from .solver_calls import AdaptiveDT
 from .solvers_numba import (
     compute_species_residual_linf,
     compute_species_residual_wrms,
     solve_block_tridiagonal_thomas,
 )
+
+
+@dataclass
+class AdaptiveDT:
+    """Advanced PID-controlled adaptive time stepping.
+
+    Uses standard H211B controller logic for smooth step size adaptation.
+    """
+
+    dt_min: float
+    dt_max: float
+    dt_initial: float
+    dt_cfl_factor: float = 0.8
+    growth_factor: float = 1.2
+    cut_factor: float = 0.5
+    pid: bool = True
+    kP: float = 0.075
+    kI: float = 0.175
+    kD: float = 0.01
+
+    enable_failure_ceiling: bool = False
+    failure_ceiling_factor: float = 0.7
+    failure_hold_steps: int = 10
+    ceiling_growth_factor: float = 1.05
+    aggressive_cut_factor: float = 0.25
+
+    enable_mttf_governor: bool = False
+    mttf_x1: float = 0.60
+    mttf_x2: float = 0.35
+    mttf_x3: float = 0.15
+    mttf_y1: float = 0.02
+    mttf_y2: float = 0.05
+    mttf_y3: float = 0.10
+
+    steps_since_failure: int = 0
+    _base_growth_factor: float = 1.2
+
+    _dt: float = 0.0
+    _err_prev: float | None = None
+    _dt_prev: float = 0.0
+    _dt_ceiling: float | None = None
+    _failed_dt: float | None = None
+    _steps_at_ceiling: int = 0
+
+    def __post_init__(self) -> None:
+        self._dt = max(self.dt_min, min(self.dt_initial, self.dt_max))
+        self._dt_prev = self._dt
+        self._base_growth_factor = self.growth_factor
+        if self.enable_failure_ceiling:
+            self._dt_ceiling = self.dt_max
+            self._failed_dt = self.dt_max
+            self._steps_at_ceiling = 0
+
+    @property
+    def dt(self) -> float:
+        """Return current time step."""
+        return self._dt
+
+    def register_failure(self, failed_dt: float, cut_factor: float | None = None) -> float:
+        """Record step failure and set a temporary ceiling or adapt MTTF growth."""
+        factor = self.cut_factor if cut_factor is None else cut_factor
+        if self.enable_mttf_governor:
+            excess = max(self.growth_factor - 1.0, 0.0)
+            if self.steps_since_failure < 5:
+                excess *= (1.0 - self.mttf_x1)
+                factor = min(factor, 0.70)
+            elif self.steps_since_failure < 10:
+                excess *= (1.0 - self.mttf_x2)
+                factor = min(factor, 0.75)
+            elif self.steps_since_failure < 20:
+                excess *= (1.0 - self.mttf_x3)
+                factor = min(factor, 0.80)
+            self.growth_factor = 1.0 + max(excess, 0.02)
+            self.steps_since_failure = 0
+
+        self._dt = max(failed_dt * factor, self.dt_min)
+        if self.enable_failure_ceiling:
+            self._failed_dt = failed_dt
+            ceiling_factor = min(self.failure_ceiling_factor, factor * 1.5) if cut_factor is not None else self.failure_ceiling_factor
+            self._dt_ceiling = max(self.dt_min, failed_dt * ceiling_factor)
+            self._steps_at_ceiling = 0
+        return self._dt
+
+    def record_success(self) -> None:
+        """Record a successful step and adapt dynamic growth factor if MTTF governor is active."""
+        self.steps_since_failure += 1
+        if self.enable_mttf_governor:
+            excess = max(self.growth_factor - 1.0, 0.0)
+            base_excess = max(self._base_growth_factor - 1.0, 0.01)
+            if self.steps_since_failure >= 40:
+                excess = min(base_excess, excess + self.mttf_y3 * base_excess)
+            elif self.steps_since_failure >= 30:
+                excess = min(base_excess, excess + self.mttf_y2 * base_excess)
+            elif self.steps_since_failure >= 20:
+                excess = min(base_excess, excess + self.mttf_y1 * base_excess)
+            self.growth_factor = 1.0 + excess
+
+    def cfl_limit(self, dx: float, vel: float, D: float) -> float:
+        """Compute global CFL estimate for advection-diffusion."""
+        adv_limit = math.inf if vel == 0 else dx / abs(vel)
+        dif_limit = math.inf if D == 0 else dx * dx / (2 * D)
+        return self.dt_cfl_factor * min(adv_limit, dif_limit)
+
+    def get_effective_max(self, _log: Optional[Callable[[str], None]] = None) -> float:
+        """Return effective maximum dt considering the dynamic failure ceiling and hold period."""
+        if self.enable_failure_ceiling and self._dt_ceiling is not None:
+            if self._dt >= self._dt_ceiling * 0.98:
+                self._steps_at_ceiling += 1
+
+            if self._steps_at_ceiling >= self.failure_hold_steps:
+                if self.ceiling_growth_factor > 1.0 and self._dt_ceiling < self.dt_max:
+                    old_ceiling = self._dt_ceiling
+                    self._dt_ceiling = min(
+                        self._dt_ceiling * self.ceiling_growth_factor,
+                        self.dt_max,
+                    )
+                    self._steps_at_ceiling = 0
+                    if _log is not None:
+                        _log(
+                            f"  Ceiling hold of {self.failure_hold_steps} steps completed: raising dt ceiling from {get_time_units(old_ceiling):.2f~P} to {get_time_units(self._dt_ceiling):.2f~P}."
+                        )
+                return min(self._dt_ceiling, self.dt_max)
+            else:
+                return min(self._dt_ceiling, self.dt_max)
+        return self.dt_max
+
+    def update(
+        self,
+        error_metric: float,
+        dt_cfl: float | None = None,
+        step_success: bool = True,
+        target_error: float = 1e-4,
+        cut_factor: float | None = None,
+    ) -> float:
+        """Compute the next dt based on solver performance and change magnitude."""
+        if not step_success:
+            factor = self.cut_factor if cut_factor is None else cut_factor
+            self._dt = max(self._dt * factor, self.dt_min)
+            return self._dt
+
+        effective_max = self.get_effective_max()
+
+        if self.pid:
+            if self._err_prev is None:
+                self._err_prev = target_error
+
+            err = max(error_metric, 1e-25)
+            err_prev = max(self._err_prev, 1e-25)
+            err_ref = target_error
+
+            factor = (
+                (err_prev / err) ** self.kP
+                * (err_ref / err) ** self.kI
+                * (err_ref / err_prev) ** self.kD
+            )
+
+            factor = max(self.cut_factor, min(self.growth_factor, factor))
+            self._dt = max(self.dt_min, min(self._dt * factor, effective_max))
+        else:
+            if error_metric < target_error:
+                self._dt = min(self._dt * self.growth_factor, effective_max)
+            else:
+                self._dt = max(self._dt * self.cut_factor, self.dt_min)
+
+        if dt_cfl is not None:
+            self._dt = min(self._dt, dt_cfl)
+
+        self._err_prev = error_metric
+        return self._dt
+
+
+def build_native_1d_transport_stencil(
+    z: np.ndarray,
+    dx: np.ndarray,
+    phi: Any,
+    D_cell: np.ndarray,
+    w: float,
+    bc_props: Dict[str, Any],
+    D_irr: Optional[np.ndarray] = None,
+    solid_scheme: str = "powerlaw",
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Constructs the exact 1D tridiagonal finite-volume transport stencil in pure NumPy.
+
+    Returns:
+        ab: shape (3, N) banded matrix (row 0: upper, row 1: diag, row 2: lower)
+        b_transport: shape (N,) boundary flux vector
+    """
+    N = len(z)
+    is_dissolved = (bc_props.get("type", "dissolved") == "dissolved")
+    eff_phi_val = np.asarray(phi.value if hasattr(phi, "value") else phi)
+    eff_phi = eff_phi_val if is_dissolved else (1.0 - eff_phi_val)
+    if eff_phi.ndim == 0:
+        eff_phi_arr = np.full(N, float(eff_phi), dtype=np.float64)
+    else:
+        eff_phi_arr = np.asarray(eff_phi, dtype=np.float64)
+    eff_phi_face = (eff_phi_arr[:-1] + eff_phi_arr[1:]) / 2.0
+
+    d_centers = z[1:] - z[:-1]
+    D_cell_arr = np.asarray(D_cell)
+    if D_cell_arr.ndim == 0:
+        D_cell_arr = np.full(N, float(D_cell_arr), dtype=np.float64)
+    # Face diffusion: distance-weighted harmonic mean
+    D_face = 2.0 / (1.0 / np.maximum(D_cell_arr[:-1], 1e-30) + 1.0 / np.maximum(D_cell_arr[1:], 1e-30))
+    diff_cond = (eff_phi_face * D_face) / d_centers
+
+    # Face convection
+    F_face = eff_phi_face * w
+    if solid_scheme == "upwind" and not is_dissolved:
+        a_E = diff_cond + np.maximum(F_face, 0.0)
+        a_W = diff_cond + np.maximum(-F_face, 0.0)
+    else:
+        Pe = F_face / np.maximum(diff_cond, 1e-30)
+        A_pe = np.maximum(0.0, (1.0 - 0.1 * np.abs(Pe))**5)
+        a_E = diff_cond * A_pe + np.maximum(F_face, 0.0)
+        a_W = diff_cond * A_pe + np.maximum(-F_face, 0.0)
+
+    ab = np.zeros((3, N), dtype=np.float64)
+    b_transport = np.zeros(N, dtype=np.float64)
+
+    # Upper diagonal: ab[0, 1:] -> coeff of C_{i+1} in equation i
+    ab[0, 1:] = -a_W
+    # Lower diagonal: ab[2, :-1] -> coeff of C_{i-1} in equation i
+    ab[2, :-1] = -a_E
+
+    # Main diagonal interior:
+    ab[1, 0] = a_E[0]
+    ab[1, 1:-1] = a_W[:-1] + a_E[1:]
+    ab[1, -1] = a_W[-1]
+
+    # Left boundary (z=0):
+    top_val = bc_props.get("top", 0.0)
+    d_top = z[0]
+    phi_top = eff_phi_arr[0]
+
+    if is_dissolved:
+        D_top = (phi_top * D_cell_arr[0]) / d_top
+        F_top = phi_top * w
+        Pe_top = F_top / np.maximum(D_top, 1e-30)
+        A_top = np.maximum(0.0, (1.0 - 0.1 * np.abs(Pe_top))**5)
+        a_in_diag = D_top * A_top + np.maximum(-F_top, 0.0)
+        a_in_rhs = D_top * A_top + np.maximum(F_top, 0.0)
+        ab[1, 0] += a_in_diag
+        b_transport[0] += a_in_rhs * top_val
+    else:
+        b_transport[0] += top_val
+
+    # Right boundary (z=L): Neumann zero-gradient (advection carries mass out)
+    ab[1, -1] += eff_phi_arr[-1] * w
+
+    # Bio-irrigation (non-local exchange for dissolved species)
+    if is_dissolved and D_irr is not None:
+        irr_arr = np.asarray(D_irr)
+        if np.any(irr_arr > 0):
+            irr_coeff = eff_phi_arr * irr_arr * dx
+            ab[1, :] += irr_coeff
+            b_transport += irr_coeff * top_val
+
+    return ab, b_transport
+
+
+class GovernorStats:
+    """Accumulates solver and governor events and reports summary breakdown."""
+
+    def __init__(self):
+        self.total_sweeps = 0
+        self.total_steps = 0
+        self.single_sweep_sweeps = 0
+        self.multi_sweep_sweeps = 0
+        self.near_converged_sweeps = 0
+        self.graceful_sweeps = 0
+        self.porewater_capped_sweeps = 0
+        self.isotope_capped_sweeps = 0
+        self.rejected_sweeps = 0
+        self.porewater_details: Dict[str, int] = {}
+        self.rejected_reasons: Dict[str, int] = {}
+
+    def record_step(
+        self,
+        sweeps: int,
+        outcome: str,
+        porewater_capped: bool = False,
+        limiting_species: Optional[str] = None,
+        isotope_capped: bool = False,
+    ) -> None:
+        self.total_steps += 1
+        self.total_sweeps += sweeps
+
+        if porewater_capped:
+            self.porewater_capped_sweeps += sweeps
+            if limiting_species:
+                self.porewater_details[limiting_species] = (
+                    self.porewater_details.get(limiting_species, 0) + 1
+                )
+        elif isotope_capped:
+            self.isotope_capped_sweeps += sweeps
+        elif outcome == "single_sweep":
+            self.single_sweep_sweeps += sweeps
+        elif outcome == "graceful":
+            self.graceful_sweeps += sweeps
+        elif outcome == "near_converged":
+            self.near_converged_sweeps += sweeps
+        else:
+            self.multi_sweep_sweeps += sweeps
+
+    def record_rejection(self, sweeps: int, reason: str = "failed") -> None:
+        self.total_sweeps += sweeps
+        self.rejected_sweeps += sweeps
+        short_reason = reason.split("\n")[0][:60]
+        self.rejected_reasons[short_reason] = (
+            self.rejected_reasons.get(short_reason, 0) + 1
+        )
+
+    def format_summary(self) -> str:
+        tot = max(self.total_sweeps, 1)
+        lines = [
+            f"Governor & Sweep Summary (Total Sweeps: {self.total_sweeps}, Steps: {self.total_steps}):"
+        ]
+        if self.single_sweep_sweeps > 0 or self.total_sweeps == 0:
+            lines.append(
+                f"  {self.single_sweep_sweeps / tot * 100:5.1f}% ({self.single_sweep_sweeps:d} sweeps): accepted with a single sweep"
+            )
+        if self.multi_sweep_sweeps > 0:
+            lines.append(
+                f"  {self.multi_sweep_sweeps / tot * 100:5.1f}% ({self.multi_sweep_sweeps:d} sweeps): accepted with multi-sweeps"
+            )
+        if self.graceful_sweeps > 0 or self.near_converged_sweeps > 0:
+            grace_tot = self.graceful_sweeps + self.near_converged_sweeps
+            lines.append(
+                f"  {grace_tot / tot * 100:5.1f}% ({grace_tot:d} sweeps): accepted near convergence / graceful tolerance"
+            )
+        if self.porewater_capped_sweeps > 0:
+            lim_str = ""
+            if self.porewater_details:
+                top_sp = max(self.porewater_details.items(), key=lambda x: x[1])[0]
+                lim_str = f" (limiting: {top_sp})"
+            lines.append(
+                f"  {self.porewater_capped_sweeps / tot * 100:5.1f}% ({self.porewater_capped_sweeps:d} sweeps): capped because porewater depleted too fast{lim_str}"
+            )
+        if self.isotope_capped_sweeps > 0:
+            lines.append(
+                f"  {self.isotope_capped_sweeps / tot * 100:5.1f}% ({self.isotope_capped_sweeps:d} sweeps): capped by isotope limiter"
+            )
+        if self.rejected_sweeps > 0:
+            top_reason = ""
+            if self.rejected_reasons:
+                top_r = max(self.rejected_reasons.items(), key=lambda x: x[1])[0]
+                top_reason = f" ({top_r})"
+            lines.append(
+                f"  {self.rejected_sweeps / tot * 100:5.1f}% ({self.rejected_sweeps:d} sweeps): rejected / Picard convergence failure{top_reason}"
+            )
+        return "\n".join(lines)
 
 
 class MonolithicNewtonSystem:

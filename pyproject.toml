@@ -21,8 +21,8 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 [project.scripts]
-generate-equations = "fipyrite.generate_equations:main"
-generate_equations = "fipyrite.generate_equations:main"
+generate-equations = "fipyrite.generate_equation_system:main"
+generate_equations = "fipyrite.generate_equation_system:main"
 generate-equation-system = "fipyrite.generate_equation_system:main"
 generate_equation_system = "fipyrite.generate_equation_system:main"
 plot_data_new = "fipyrite.plot_data_new:main"
