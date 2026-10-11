@@ -8,6 +8,9 @@ dist/
 nbk/
 wheels/
 *.egg-info
+src/*.egg-info
+src/**/_version.py
+_version.py
 TAGS
 *.pdf
 *.csv

@@ -2,7 +2,5 @@ numba
 numpy
 pandas
 matplotlib
+pint
 watchdog
-chempy
-argparse
-pytest

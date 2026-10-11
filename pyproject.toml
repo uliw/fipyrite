@@ -3,23 +3,51 @@ requires = ["setuptools>=64", "setuptools-scm[toml]>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mantis"
-version = "0.1.0"
+name = "mantis-rtm"
+dynamic = ["version"]
 description = "MANTIS: A Monolithic Assembly of Nonlinear Transport Interactions Solver"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["numpy", "pandas", "matplotlib", "numba", "watchdog", "chempy", "argparse", "pytest"]
-
-license = {text = "GPL3"}          # keep in sync with LICENSE file
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [
     {name = "Uli Wortmann", email = "uli.wortmann@utoronto.ca"},
 ]
-keywords = ["reaction transport modeling", "geochemistry", "monolithic solver", "diagenesis"]
+keywords = [
+    "reactive transport modeling",
+    "reaction transport modeling",
+    "geochemistry",
+    "monolithic solver",
+    "diagenesis",
+    "block newton",
+    "advection diffusion reaction",
+]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: GPL3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
 ]
+dependencies = [
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "numba",
+    "pint",
+    "watchdog",
+]
+
+[project.urls]
+Homepage = "https://github.com/uliw/mantis"
+Repository = "https://github.com/uliw/mantis"
+Issues = "https://github.com/uliw/mantis/issues"
+
 [project.scripts]
 generate-equations = "mantis.generate_equation_system:main"
 generate_equations = "mantis.generate_equation_system:main"
@@ -27,16 +55,22 @@ generate-equation-system = "mantis.generate_equation_system:main"
 generate_equation_system = "mantis.generate_equation_system:main"
 plot_data_new = "mantis.plot_data_new:main"
 
-
 # Optional extras (e.g. for development, testing, docs)
 [project.optional-dependencies]
-dev = ["ruff"]
-test = ["pytest", "pytest-cov"]
+dev = ["ruff", "twine", "build"]
+test = ["pytest", "pytest-cov", "scipy"]
 doc = ["sphinx"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["mantis*"]
+exclude = ["tests*", ".vscode*"]
 
 # Automatic version from git tags
 [tool.setuptools_scm]
 write_to = "src/mantis/_version.py"
+fallback_version = "0.1.0"
+local_scheme = "no-local-version"
 
 [tool.ruff]
 preview = true
