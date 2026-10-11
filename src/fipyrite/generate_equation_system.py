@@ -37,11 +37,13 @@ class ReactionSystemValidator:
         self,
         species_path: Path,
         constants_path: Path,
-        limiters_path: Path,
+        limiters_path: Optional[Path] = None,
+        reactions_path: Optional[Path] = None,
     ):
         self.species_path = Path(species_path)
         self.constants_path = Path(constants_path)
-        self.limiters_path = Path(limiters_path)
+        self.limiters_path = Path(limiters_path) if limiters_path is not None else None
+        self.reactions_path = Path(reactions_path) if reactions_path is not None else None
 
         self.valid_species: Set[str] = set()
         self.valid_constants: Set[str] = set()
@@ -62,6 +64,11 @@ class ReactionSystemValidator:
         if hasattr(mod_species, "species") and isinstance(mod_species.species, dict):
             self.valid_species = set(mod_species.species.keys())
             self.species_defs = mod_species.species
+            # Also register dynamic/alias species if defined with equilibrium_of or alias_of
+            for sp_k, sp_meta in mod_species.species.items():
+                if isinstance(sp_meta, dict):
+                    if "equilibrium_of" in sp_meta or "alias_of" in sp_meta or "fraction" in sp_meta:
+                        self.valid_species.add(sp_k)
         else:
             raise ValueError(f"No 'species' dictionary found in {self.species_path}")
 
@@ -101,21 +108,40 @@ class ReactionSystemValidator:
         except Exception:
             pass
 
-        # 3. Limiters (AST-based static extraction from limiters["..."] assignments)
-        if not self.limiters_path.exists():
-            raise FileNotFoundError(f"Limiters file not found: {self.limiters_path}")
+        # 3. Limiters (from limiters_path or reactions_path)
         self.valid_limiters = set()
-        try:
-            lim_tree = ast.parse(self.limiters_path.read_text(encoding="utf-8"))
-            for node in ast.walk(lim_tree):
-                if isinstance(node, ast.Assign):
-                    for target in node.targets:
-                        if isinstance(target, ast.Subscript):
-                            if isinstance(target.value, ast.Name) and target.value.id == "limiters":
-                                if isinstance(target.slice, ast.Constant) and isinstance(target.slice.value, str):
-                                    self.valid_limiters.add(target.slice.value)
-        except Exception as e:
-            raise ValueError(f"Could not parse limiters file {self.limiters_path}: {e}")
+        if self.limiters_path is not None and self.limiters_path.exists():
+            try:
+                lim_tree = ast.parse(self.limiters_path.read_text(encoding="utf-8"))
+                for node in ast.walk(lim_tree):
+                    if isinstance(node, ast.Assign):
+                        for target in node.targets:
+                            if isinstance(target, ast.Subscript):
+                                if isinstance(target.value, ast.Name) and target.value.id == "limiters":
+                                    if isinstance(target.slice, ast.Constant) and isinstance(target.slice.value, str):
+                                        self.valid_limiters.add(target.slice.value)
+                            elif isinstance(target, ast.Name) and target.id == "limiters":
+                                if isinstance(node.value, ast.Dict):
+                                    for k in node.value.keys:
+                                        if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                                            self.valid_limiters.add(k.value)
+            except Exception as e:
+                raise ValueError(f"Could not parse limiters file {self.limiters_path}: {e}")
+
+        # Also check if limiters are defined in reactions_path
+        if self.reactions_path is not None and self.reactions_path.exists():
+            try:
+                rxn_tree = ast.parse(self.reactions_path.read_text(encoding="utf-8"))
+                for node in ast.walk(rxn_tree):
+                    if isinstance(node, ast.Assign):
+                        for target in node.targets:
+                            if isinstance(target, ast.Name) and target.id == "limiters":
+                                if isinstance(node.value, ast.Dict):
+                                    for k in node.value.keys:
+                                        if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                                            self.valid_limiters.add(k.value)
+            except Exception:
+                pass
 
     @staticmethod
     def parse_reaction_species(reaction_str: str) -> Tuple[List[Tuple[float, str]], List[Tuple[float, str]]]:
@@ -379,8 +405,8 @@ def generate_equations(
         Path where the generated equations module will be written.
     kinetic_constants_path : str | Path
         Path to reaction constants definitions file.
-    limiters_path : str | Path
-        Path to limiters definition file.
+    limiters_path : str | Path | None, optional
+        Path to limiters definition file. If None or not found, limiters will be read from reactions_path.
     species_path : str | Path
         Path to model species definitions file.
     verbose : bool
@@ -396,20 +422,24 @@ def generate_equations(
     reactions_p = Path(reactions_path).resolve()
     equations_p = Path(equations_path).resolve()
     constants_p = Path(kinetic_constants_path).resolve()
-    limiters_p = Path(limiters_path).resolve()
+    limiters_p = Path(limiters_path).resolve() if limiters_path is not None else None
     species_p = Path(species_path).resolve()
 
     if verbose:
         print(f"[FiPyrite] Loading reactions from: {reactions_p}")
         print(f"[FiPyrite] Using species definitions: {species_p}")
         print(f"[FiPyrite] Using reaction constants:   {constants_p}")
-        print(f"[FiPyrite] Using limiters definitions: {limiters_p}")
+        if limiters_p and limiters_p.exists():
+            print(f"[FiPyrite] Using limiters definitions: {limiters_p}")
+        else:
+            print(f"[FiPyrite] Using limiters definitions from reactions file")
 
     # 1. Load validator
     validator = ReactionSystemValidator(
         species_path=species_p,
         constants_path=constants_p,
-        limiters_path=limiters_p,
+        limiters_path=limiters_p if (limiters_p and limiters_p.exists()) else None,
+        reactions_path=reactions_p,
     )
 
     # 2. Load input reactions
@@ -506,6 +536,10 @@ def resolve_and_prepare_equations(
     limiters_path = _resolve(lim_val, "limiters.py")
     species_path = _resolve(sp_val, "species.py")
 
+    if not limiters_path.exists():
+        # Check if limiters are defined directly inside reactions_path
+        limiters_path = None
+
     if not reactions_path.exists():
         raise FileNotFoundError(
             f"Declarative reactions file not found: '{reactions_path}'. "
@@ -527,7 +561,7 @@ def resolve_and_prepare_equations(
     elif constants_path.exists() and constants_path.stat().st_mtime > equations_path.stat().st_mtime:
         needs_regen = True
         reason = f"{constants_path.name} is newer than {equations_path.name}"
-    elif limiters_path.exists() and limiters_path.stat().st_mtime > equations_path.stat().st_mtime:
+    elif limiters_path is not None and limiters_path.exists() and limiters_path.stat().st_mtime > equations_path.stat().st_mtime:
         needs_regen = True
         reason = f"{limiters_path.name} is newer than {equations_path.name}"
     elif species_path.exists() and species_path.stat().st_mtime > equations_path.stat().st_mtime:
@@ -546,7 +580,10 @@ def resolve_and_prepare_equations(
         )
 
     # Ensure parent directories of equations and limiters are on sys.path for import resolution
-    for p_dir in [str(equations_path.parent), str(limiters_path.parent)]:
+    import_dirs = [str(equations_path.parent)]
+    if limiters_path is not None:
+        import_dirs.append(str(limiters_path.parent))
+    for p_dir in import_dirs:
         if p_dir not in sys.path:
             sys.path.insert(0, p_dir)
 
@@ -675,7 +712,46 @@ class EquationSystemGenerator:
             '    partition_equilibrium_isotope_32,',
             '    data_container,',
             ')',
-            'from limiters import get_limiters',
+            'try:',
+            '    from limiters import get_limiters as _external_get_limiters',
+            'except ImportError:',
+            '    _external_get_limiters = None',
+            '',
+            'def get_limiters(c, mp):',
+            '    """Calculates phase-corrected Monod and inhibition limiters for all species."""',
+            '    if _external_get_limiters is not None:',
+            '        return _external_get_limiters(c, mp)',
+            '    phi = mp.phi.value if hasattr(mp.phi, "value") else mp.phi',
+            '    solid_phi = 1.0 - phi',
+            '    K_O2 = getattr(mp, "K_O2", 0.0) / phi',
+            '    K_TS2 = getattr(mp, "K_TS2", 0.0) / phi',
+            '    K_SO4 = getattr(mp, "K_SO4", 0.0) / phi',
+            '    K_Fe3 = getattr(mp, "K_Fe3", 0.0) / solid_phi',
+            '    K_Fe3_diss_red = getattr(mp, "K_Fe3_diss_red", 0.0) / solid_phi',
+            '    limiters = {}',
+            '    if hasattr(c, "O2"):',
+            '        limiters["O2_implicit"] = 1.0 / (c.O2 + K_O2)',
+            '        limiters["O2_inhibit"] = K_O2 / (c.O2 + K_O2)',
+            '        if hasattr(mp, "K_O2_TS2"):',
+            '            limiters["O2_implicit_TS2"] = 1.0 / (c.O2 + mp.K_O2_TS2)',
+            '        else:',
+            '            limiters["O2_implicit_TS2"] = 1.0 / (c.O2 + K_O2)',
+            '    if hasattr(c, "TS2"):',
+            '        limiters["TS2"] = K_TS2 / (c.TS2 + K_TS2)',
+            '        K_eps_hs = getattr(mp, "K_epsilon_TS2_O2", 1e-3)',
+            '        limiters["TS2_alpha_explicit"] = c.TS2 / (c.TS2 + K_eps_hs)',
+            '    if hasattr(c, "SO4"):',
+            '        limiters["SO4_implicit"] = 1.0 / (c.SO4 + K_SO4)',
+            '        limiters["SO4_explicit"] = c.SO4 / (c.SO4 + K_SO4)',
+            '        K_eps_msr = getattr(mp, "K_epsilon_msr", 1e-3)',
+            '        limiters["SO4_alpha_explicit"] = c.SO4 / (c.SO4 + K_eps_msr)',
+            '    if hasattr(c, "Fe3"):',
+            '        fe3_val = c.Fe3.value if hasattr(c.Fe3, "value") else c.Fe3',
+            '        fe3_pos = np.maximum(fe3_val, 0.0)',
+            '        limiters["Fe3_implicit"] = 1.0 / (fe3_pos + K_Fe3)',
+            '        limiters["Fe3_diss_red_implicit"] = 1.0 / (fe3_pos + K_Fe3_diss_red)',
+            '        limiters["Fe3_diss_red_inhib"] = K_Fe3_diss_red / (fe3_pos + K_Fe3_diss_red)',
+            '    return limiters',
             '',
             '# -----------------------------------------------------------------------------',
             '# Individual Reaction Functions',
@@ -1223,7 +1299,14 @@ class EquationSystemGenerator:
             '        RHS[sp] = np.zeros(shape, dtype=np.float64)',
             '        RATES[sp] = np.zeros(shape, dtype=np.float64)',
             '        CROSS[sp] = []',
-            '    limiters = lim if lim is not None else get_limiters(c, mp)',
+            '    if lim is not None:',
+            '        limiters = lim',
+            '    elif get_limiters is not None:',
+            '        limiters = get_limiters(c, mp)',
+            '    elif hasattr(mp, "get_limiters") and callable(mp.get_limiters):',
+            '        limiters = mp.get_limiters(c, mp)',
+            '    else:',
+            '        limiters = getattr(mp, "limiters", {})',
             '    rxns = getattr(mp, "diagenetic_reactions", None)',
             '    if rxns is None:',
             '        rxns = DEFAULT_DIAGENETIC_REACTIONS',
@@ -1261,7 +1344,12 @@ class EquationSystemGenerator:
             '    phi = np.asarray(mp.phi.value if hasattr(mp.phi, "value") else mp.phi)',
             '    solid_fac = 1.0 - phi',
             '    diss_fac = phi',
-            '    lim = get_limiters(c, mp)',
+            '    if get_limiters is not None:',
+            '        lim = get_limiters(c, mp)',
+            '    elif hasattr(mp, "get_limiters") and callable(mp.get_limiters):',
+            '        lim = mp.get_limiters(c, mp)',
+            '    else:',
+            '        lim = getattr(mp, "limiters", {})',
             '',
         ])
 
