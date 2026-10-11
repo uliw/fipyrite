@@ -579,6 +579,8 @@ def compute_bio_irrigation_alpha(z, alpha0, x_irr):
     float or np.ndarray
         The irrigation intensity at depth z.
     """
+    if alpha0 == 0.0 or x_irr <= 0.0:
+        return np.zeros_like(z, dtype=np.float64)
     z = z * 100
     x_irr = x_irr * 100
     # Equation 6: alpha(z) = alpha0 * exp(-z / x_irr)
