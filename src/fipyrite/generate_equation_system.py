@@ -131,20 +131,21 @@ class ReactionSystemValidator:
             return extracted
 
         raw_limiters: Dict[str, str] = {}
-        if self.limiters_path is not None and self.limiters_path.exists():
-            try:
-                lim_tree = ast.parse(self.limiters_path.read_text(encoding="utf-8"))
-                raw_limiters.update(_extract_limiters_from_ast(lim_tree))
-            except Exception as e:
-                raise ValueError(f"Could not parse limiters file {self.limiters_path}: {e}")
-
-        # Also check if limiters are defined in reactions_path
+        # 1. First check if limiters are defined in reactions_path (modern declarative standard)
         if self.reactions_path is not None and self.reactions_path.exists():
             try:
                 rxn_tree = ast.parse(self.reactions_path.read_text(encoding="utf-8"))
                 raw_limiters.update(_extract_limiters_from_ast(rxn_tree))
             except Exception:
                 pass
+
+        # 2. If not defined in reactions_path, fall back to limiters_path
+        if not raw_limiters and self.limiters_path is not None and self.limiters_path.exists():
+            try:
+                lim_tree = ast.parse(self.limiters_path.read_text(encoding="utf-8"))
+                raw_limiters.update(_extract_limiters_from_ast(lim_tree))
+            except Exception as e:
+                raise ValueError(f"Could not parse limiters file {self.limiters_path}: {e}")
 
         # Expand limiters:
         # Base implicit limiter L_imp = 1 / (C + K) -> derive _implicit, _explicit, _inhibit
@@ -574,11 +575,14 @@ def resolve_and_prepare_equations(
     reactions_path = _resolve(rxn_val, f"{exp}_reactions.py")
     equations_path = _resolve(eq_val, f"{exp}_equations.py")
     constants_path = _resolve(kc_val, "reaction_constants.py")
-    limiters_path = _resolve(lim_val, "limiters.py")
     species_path = _resolve(sp_val, "species.py")
 
-    if not limiters_path.exists():
-        # Check if limiters are defined directly inside reactions_path
+    # If limiters not explicitly specified in p_dict, check if base_dir has limiters.py
+    if lim_val is not None:
+        limiters_path = _resolve(lim_val, "limiters.py")
+    elif (base_dir / "limiters.py").exists():
+        limiters_path = (base_dir / "limiters.py").resolve()
+    else:
         limiters_path = None
 
     if not reactions_path.exists():
@@ -762,11 +766,14 @@ class EquationSystemGenerator:
             '    """Calculates phase-corrected Monod and inhibition limiters dynamically."""',
             '    if _external_get_limiters is not None:',
             '        return _external_get_limiters(c, mp)',
-            '    phi = mp.phi.value if hasattr(mp.phi, "value") else mp.phi',
+            '    phi = np.asarray(mp.phi.value if hasattr(mp.phi, "value") else mp.phi)',
             '    solid_phi = 1.0 - phi',
+            '    # Dynamically extract half-saturation constants from mp (liquid scaled by phi, solid by solid_phi)',
+            '    # Liquid phase limiters:',
             '    K_O2 = getattr(mp, "K_O2", 0.0) / phi',
             '    K_TS2 = getattr(mp, "K_TS2", 0.0) / phi',
             '    K_SO4 = getattr(mp, "K_SO4", 0.0) / phi',
+            '    # Solid phase limiters:',
             '    K_Fe3 = getattr(mp, "K_Fe3", 0.0) / solid_phi',
             '    K_Fe3_diss_red = getattr(mp, "K_Fe3_diss_red", 0.0) / solid_phi',
             '    limiters = {}',
