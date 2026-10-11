@@ -4,13 +4,13 @@ import time
 import numpy as np
 import pytest
 
-from fipyrite.parallel_video import (
+from mantis.parallel_video import (
     detect_ffmpeg_encoder,
     get_default_video_workers,
     IndexedVideoQueue,
     ParallelVideoManager,
 )
-from fipyrite.live_plot_lib import BoundedVideoQueue, LivePlotter
+from mantis.live_plot_lib import BoundedVideoQueue, LivePlotter
 
 
 def test_detect_ffmpeg_encoder():

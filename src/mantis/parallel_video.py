@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from fipyrite.live_plot_lib import BoundedVideoQueue
+from mantis.live_plot_lib import BoundedVideoQueue
 
 if TYPE_CHECKING:
     import pathlib as pl
@@ -185,7 +185,7 @@ def _video_render_worker(
     matplotlib.rcParams["figure.dpi"] = dpi
     matplotlib.rcParams["savefig.dpi"] = dpi
     import matplotlib.pyplot as plt
-    import fipyrite.plot_data_new as plot_data_new
+    import mantis.plot_data_new as plot_data_new
 
     fig = None
     ax_objects = None
@@ -379,7 +379,7 @@ def _video_sequencer(
 
 class ParallelVideoManager:
     """
-    Manages multi-core concurrent video rendering for FiPyrite.
+    Manages multi-core concurrent video rendering for MANTIS.
     Spawns worker processes (defaulting to 60% of all CPU cores) and a sequencer process.
     Provides backpressure through an IndexedVideoQueue (default max 100 entries).
     """

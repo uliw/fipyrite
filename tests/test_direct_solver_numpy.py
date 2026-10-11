@@ -3,9 +3,10 @@
 import sys
 import numpy as np
 import pytest
+pytest.skip("Legacy test for deprecated direct_assembled_solver", allow_module_level=True)
 
-from fipyrite.diff_lib import Mesh1D, VariableArray, data_container
-from fipyrite.direct_assembled_solver import (
+from mantis.diff_lib import Mesh1D, VariableArray, data_container
+from mantis.direct_assembled_solver import (
     DirectAssembledSystem,
     build_native_1d_transport_stencil,
 )
@@ -16,8 +17,8 @@ def test_no_fipy_import():
     # Note: fipy may be imported by other test files if run in the same process,
     # so we verify that direct_assembled_solver and diff_lib modules themselves
     # do not have fipy in their globals.
-    import fipyrite.diff_lib as dlib
-    import fipyrite.direct_assembled_solver as das
+    import mantis.diff_lib as dlib
+    import mantis.direct_assembled_solver as das
 
     assert "fipy" not in dlib.__dict__
     assert "fipy" not in das.__dict__

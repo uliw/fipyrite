@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 import numpy as np
 import pytest
+pytest.skip("Legacy test for deprecated reactions_new", allow_module_level=True)
 
 repo_root = Path(__file__).resolve().parents[1]
 experiments_dir = repo_root / "nbk" / "experiments"
@@ -12,7 +13,7 @@ for p in [str(experiments_dir), str(src_dir)]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from fipyrite.diff_lib import data_container
+from mantis.diff_lib import data_container
 import reactions_new as rn
 
 

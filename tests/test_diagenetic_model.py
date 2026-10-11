@@ -1,18 +1,22 @@
 """test_diagenetic_model.py
 
-Unit and regression tests for DiageneticModel interface in fipyrite.model.
+Unit and regression tests for DiageneticModel interface in mantis.model.
 """
 
 from pathlib import Path
 import pytest
-from fipyrite import DiageneticModel
+from mantis import DiageneticModel
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+EXP_DIR = BASE_DIR / "nbk" / "experiments"
 
 
 def test_diagenetic_model_experiment_name_derivation():
     model = DiageneticModel(
-        species="nbk/experiments_new/species.py",
-        reactions="nbk/experiments_new/fes_reactions.py",
-        constants="nbk/experiments_new/kinetic_constants_slow.py",
+        base_dir=EXP_DIR,
+        species="species.py",
+        reactions="fes_reactions.py",
+        constants="kinetic_constants_slow.py",
     )
     # Since caller frame is test_diagenetic_model.py, stem should be test_diagenetic_model
     assert model.experiment == "test_diagenetic_model"
@@ -20,9 +24,10 @@ def test_diagenetic_model_experiment_name_derivation():
 
 def test_diagenetic_model_cli_empty_arg_query(capsys):
     model = DiageneticModel(
-        species="nbk/experiments_new/species.py",
-        reactions="nbk/experiments_new/fes_reactions.py",
-        constants="nbk/experiments_new/kinetic_constants_slow.py",
+        base_dir=EXP_DIR,
+        species="species.py",
+        reactions="fes_reactions.py",
+        constants="kinetic_constants_slow.py",
         experiment="test_exp",
     )
     with pytest.raises(SystemExit) as exc_info:
@@ -36,11 +41,12 @@ def test_diagenetic_model_cli_empty_arg_query(capsys):
 def test_diagenetic_model_setup(tmp_path):
     eq_file = tmp_path / "test_setup_exp_equations.py"
     model = DiageneticModel(
-        species="nbk/experiments_new/species.py",
-        reactions="nbk/experiments_new/fes_reactions.py",
-        constants="nbk/experiments_new/kinetic_constants_slow.py",
+        base_dir=EXP_DIR,
+        species="species.py",
+        reactions="fes_reactions.py",
+        constants="kinetic_constants_slow.py",
         equations=eq_file,
-        layout="nbk/experiments_new/plot_layout.py",
+        layout="plot_layout.py",
         experiment="test_setup_exp",
     )
     model.configure(

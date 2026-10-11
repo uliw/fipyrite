@@ -1,6 +1,6 @@
 """model.py
 
-Unified, declarative DiageneticModel interface for FiPyrite reaction-transport simulations.
+Unified, declarative DiageneticModel interface for MANTIS reaction-transport simulations.
 
 Provides a clean object-oriented entry point that:
 - Automatically resolves paths relative to the calling script.
@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pint
 
-from fipyrite.diff_lib import (
+from mantis.diff_lib import (
     VariableArray as CellVariable,
     check_peclet_numbers,
     compute_bio_irrigation_alpha,
@@ -37,9 +37,9 @@ from fipyrite.diff_lib import (
     save_data,
     save_state,
 )
-from fipyrite.generate_equation_system import resolve_and_prepare_equations
-from fipyrite.live_plot_lib import LivePlotter
-from fipyrite.monolithic_solver import run_non_steady_state_solver_monolithic as run_solver
+from mantis.generate_equation_system import resolve_and_prepare_equations
+from mantis.live_plot_lib import LivePlotter
+from mantis.monolithic_solver import run_non_steady_state_solver_monolithic as run_solver
 
 
 class DiageneticModelResult:
@@ -92,7 +92,7 @@ class DiageneticModelResult:
 
     def plot_summary(self, layout_file: Optional[Union[str, Path]] = None, outfile: Optional[str] = None) -> Optional[str]:
         """Renders the final summary plot PDF."""
-        import fipyrite.plot_data_new as pdn
+        import mantis.plot_data_new as pdn
         layout = layout_file or getattr(self.mp, "layout_file", "plot_layout.py")
         if not Path(layout).exists() and hasattr(self.mp, "_caller_dir"):
             candidate = Path(self.mp._caller_dir) / Path(layout).name
@@ -371,7 +371,7 @@ class DiageneticModel:
 
         parser = argparse.ArgumentParser(
             description=(
-                f"FiPyrite Diagenetic Model: {self.experiment}\n\n"
+                f"MANTIS Diagenetic Model: {self.experiment}\n\n"
                 "Interactive Category Query:\n"
                 "  Passing category flags without arguments displays all configurable options and current defaults:\n"
                 "    %(prog)s --solver        Show all solver options and current settings\n"
@@ -726,7 +726,7 @@ class DiageneticModel:
 
         # 8. Compute molecular diffusion coefficients from species recipes
         # Import diff_lib module for diff_coeff functions
-        import fipyrite.diff_lib as diff_lib_mod
+        import mantis.diff_lib as diff_lib_mod
 
         for sp_name, meta in species_defs.items():
             diff_spec = meta.get("diffusion")

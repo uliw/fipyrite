@@ -1,4 +1,4 @@
-"""Monolithic Block Newton-Raphson Solver for FiPyrite.
+"""Monolithic Block Newton-Raphson Solver for MANTIS.
 
 Solves the coupled non-steady-state reactive-transport system as a monolithic
 nonlinear system using a Block Tridiagonal Matrix Algorithm (Block TDMA)

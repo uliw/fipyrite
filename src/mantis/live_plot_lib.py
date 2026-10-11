@@ -180,7 +180,7 @@ class LivePlotter:
         self.title = title
 
         if self.video_path and not self.gui:
-            from fipyrite.parallel_video import ParallelVideoManager
+            from mantis.parallel_video import ParallelVideoManager
 
             self._backend: Optional[ParallelVideoManager] = ParallelVideoManager(
                 layout_path=self.layout_path,
@@ -230,7 +230,7 @@ class LivePlotter:
                 and self._backend.queue.last_snapshot
             ):
                 try:
-                    import fipyrite.plot_data_new as plot_data_new
+                    import mantis.plot_data_new as plot_data_new
 
                     data, title = self._backend.queue.last_snapshot
                     df = pd.DataFrame(data)
@@ -302,7 +302,7 @@ class LivePlotter:
             matplotlib.use("TkAgg")
         else:
             matplotlib.use("Agg")
-        import fipyrite.plot_data_new as plot_data_new
+        import mantis.plot_data_new as plot_data_new
         from matplotlib.animation import FFMpegWriter
 
         # Re-assert clean SIGTERM handler after imports in case libraries modified it
@@ -584,7 +584,7 @@ def save_final_pdf(
     """
     Produce a static final PDF plot of the model state.
     """
-    import fipyrite.plot_data_new as plot_data_new
+    import mantis.plot_data_new as plot_data_new
 
     if outfile is None:
         outfile = f"{mp.plot_name}.pdf"

@@ -1,12 +1,12 @@
-#+TITLE: FiPyrite: A Geoscientist's Guide to 1D Reactive-Transport Modeling
-#+AUTHOR: FiPyrite Development Team
+#+TITLE: MANTIS: A Geoscientist's Guide to 1D Reactive-Transport Modeling
+#+AUTHOR: MANTIS Development Team
 #+DATE: [2026-10-11]
 #+OPTIONS: toc:3 num:t ^:{}
 #+STARTUP: showeverything
 
-* Introduction: What is FiPyrite?
+* Introduction: What is MANTIS?
 
-Welcome to *FiPyrite*! If you are a geochemist, sedimentologist, or marine geologist, you are likely familiar with the classic picture of early diagenesis in marine sediments:
+Welcome to *MANTIS* (*M*onolithic *A*ssembly of *N*onlinear *T*ransport *I*nteractions *S*olver)! If you are a geochemist, sedimentologist, or marine geologist, you are likely familiar with the classic picture of early diagenesis in marine sediments:
 - Organic matter rains down onto the seafloor and is buried.
 - Microorganisms degrade this carbon using a succession of electron acceptors in order of decreasing thermodynamic yield (Oxygen $\to$ Nitrate $\to$ Manganese/Iron oxides $\to$ Sulfate $\to$ Methanogenesis).
 - Dissolved porewater species (like $\text{SO}_4^{2-}$, $\text{HS}^-$, and $\text{Fe}^{2+}$) diffuse and are bio-irrigated, while particulate phases (organic carbon, reactive iron oxides, pyrite) are buried and mixed by burrowing organisms (bioturbation).
@@ -14,16 +14,16 @@ Welcome to *FiPyrite*! If you are a geochemist, sedimentologist, or marine geolo
 
 Traditionally, translating these natural concepts into a computer simulation required writing intricate numerical solvers, wrestling with differential equation discretization, and manually deriving Jacobian matrices.
 
-*FiPyrite* changes this workflow. It is designed to decouple the *science* from the *numerical mechanics*:
+*MANTIS* changes this workflow. It is designed to decouple the *science* from the *numerical mechanics*:
 1. You describe the *species*, *reactions*, *rate constants*, and *environmental boundary conditions* in clean, human-readable Python files.
-2. FiPyrite parses the stoichiometry, calculates exact mathematical Jacobians under the hood using symbolic computer algebra (SymPy), and solves the coupled reactive-transport system using an accelerated monolithic Block Newton solver.
+2. MANTIS parses the stoichiometry, calculates exact mathematical Jacobians under the hood using symbolic computer algebra (SymPy), and solves the coupled reactive-transport system using an accelerated monolithic Block Newton solver.
 3. You get publication-ready depth profiles, spreadsheets, and time-lapse videos of your sediment column.
 
 This guide walks you through setting up, configuring, running, and interpreting your own diagenetic simulations.
 
 * Overall Model Architecture: What is Where?
 
-A typical FiPyrite project directory contains five primary configuration files, alongside the master run script:
+A typical MANTIS project directory contains five primary configuration files, alongside the master run script:
 
 #+BEGIN_EXAMPLE
 my_project/
@@ -34,7 +34,7 @@ my_project/
 └── run_velde_model.py         <- Master driver script (sediment accumulation rate, depth, duration)
 #+END_EXAMPLE
 
-When you execute =python run_velde_model.py=, FiPyrite automatically detects these files, ensures the underlying equation system is up to date, solves the time evolution of the sediment column, and produces your outputs:
+When you execute =python run_velde_model.py=, MANTIS automatically detects these files, ensures the underlying equation system is up to date, solves the time evolution of the sediment column, and produces your outputs:
 - =<model_name>.pdf=: A multi-panel summary plot of porewater and solid-phase profiles.
 - =<model_name>.csv=: A tabular export of concentrations, reaction rates, and isotope ratios across depth.
 - =<model_name>_state.npz=: The complete numerical state of the simulation for restarting or continuing runs.
@@ -216,12 +216,12 @@ In sediment columns, microbes follow the classic redox ladder (Froelich et al., 
   I(C) = \frac{K}{C + K} = 1 - \frac{C}{C + K}
   \]
 
-In FiPyrite, you do *not* need to write out explicit fraction formulas for every reaction. You define clean base limiters in a dictionary:
+In MANTIS, you do *not* need to write out explicit fraction formulas for every reaction. You define clean base limiters in a dictionary:
 
 #+BEGIN_SRC python
 limiters = {
     # Implicit form: 1 / (C + K)
-    # FiPyrite automatically generates the limiter [C / (C + K)] and inhibitor [K / (C + K)]!
+    # MANTIS automatically generates the limiter [C / (C + K)] and inhibitor [K / (C + K)]!
     "O2": "1.0 / (c.O2 + K_O2)",
     "O2_TS2": "1.0 / (c.O2 + mp.K_O2_TS2)",
     "TS2": "1.0 / (c.TS2 + K_TS2)",
@@ -313,12 +313,12 @@ The driver script is your experiment control panel. It specifies the sediment ac
 
 #+BEGIN_SRC python
 #!/usr/bin/env python
-from fipyrite import DiageneticModel
-from fipyrite.diff_lib import get_total_delta
+from mantis import DiageneticModel
+from mantis.diff_lib import get_total_delta
 
 if __name__ == "__main__":
     # 1. Initialize the model
-    # FiPyrite automatically associates species.py in the same folder
+    # MANTIS automatically associates species.py in the same folder
     model = DiageneticModel(
         reactions="fes_reactions.py",
         constants="kinetic_constants_slow.py",
@@ -379,10 +379,10 @@ The =plot_layout.py= file gives you complete control over figure layout, colors,
 
 ** Converting Model Units to Geochemical Units
 
-In the model solver, all concentrations are tracked in volumetric $\text{mmol/L}$. To convert them to $\text{wt}\%$ for your figures, FiPyrite provides helper functions:
+In the model solver, all concentrations are tracked in volumetric $\text{mmol/L}$. To convert them to $\text{wt}\%$ for your figures, MANTIS provides helper functions:
 
 #+BEGIN_SRC python
-from fipyrite.diff_lib import solid_conc_to_wt_percent, liquid_conc_to_wt_percent
+from mantis.diff_lib import solid_conc_to_wt_percent, liquid_conc_to_wt_percent
 
 # Convert solid FeS (in mmol/L) to wt% dry sediment:
 # solid_conc_to_wt_percent(C_solid, molecular_weight, grain_density_g_cm3, porosity)
@@ -448,7 +448,7 @@ To run your simulation, simply run the driver script in your terminal:
 python run_velde_model.py
 #+END_SRC
 
-During execution, FiPyrite outputs progressive milestones indicating physical time reached, current timestep $\Delta t$, and Newton iterations:
+During execution, MANTIS outputs progressive milestones indicating physical time reached, current timestep $\Delta t$, and Newton iterations:
 #+BEGIN_EXAMPLE
 Grid generated with 1108 points.
 Starting Monolithic Block Newton-Raphson Solver. dt_init: 24.00 h
@@ -487,7 +487,7 @@ Key flags include:
 
 * Solver Mechanics & Physical Realism (Geochemist's Alert!)
 
-A critical strength of FiPyrite's monolithic implicit Block Newton solver is that it is *unconditionally numerically stable*: unlike classical explicit methods (which blow up if the timestep $\Delta t$ exceeds seconds or hours), FiPyrite will *not crash* even when taking timesteps of $\Delta t = 1\text{ year}$ or more.
+A critical strength of MANTIS's monolithic implicit Block Newton solver is that it is *unconditionally numerically stable*: unlike classical explicit methods (which blow up if the timestep $\Delta t$ exceeds seconds or hours), MANTIS will *not crash* even when taking timesteps of $\Delta t = 1\text{ year}$ or more.
 
 However, *numerical stability is not the same as physical realism*. Here is why this distinction matters:
 
@@ -500,12 +500,12 @@ If the solver takes very large time steps ($\Delta t = 1\text{ year}$), diffusio
 
 ** How to Ensure Physical Realism:
 1. *Cap $\Delta t_{\text{max}}$*: If you are studying transient front migration or sharp redox boundaries, set =dt_max="1 month"= or =dt_max="6 month"= rather than multiple years.
-2. *Refine the Reaction Zone Grid*: Use FiPyrite's =make_grid2= with high resolution (e.g. $\Delta z \le 0.5\text{ mm}$) across the critical depth where the redox front sits.
+2. *Refine the Reaction Zone Grid*: Use MANTIS's =make_grid2= with high resolution (e.g. $\Delta z \le 0.5\text{ mm}$) across the critical depth where the redox front sits.
 3. *Check Front Coexistence*: Verify that reactants do not unnaturally overlap by running diagnostic checks across your front.
 
 * Summary & Next Steps
 
-You now have a complete overview of FiPyrite's modular modeling system:
+You now have a complete overview of MANTIS's modular modeling system:
 1. *Species* are declared in =species.py= with phases, diffusion laws, and boundary conditions.
 2. *Kinetics* are set in =kinetic_constants_*.py= with half-saturation and rate values.
 3. *Reactions* are written in =fes_reactions.py= with natural chemistry and Monod/inhibition controls.

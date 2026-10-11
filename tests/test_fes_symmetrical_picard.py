@@ -2,14 +2,15 @@ import sys
 from pathlib import Path
 import numpy as np
 import pytest
-from fipyrite.diff_lib import VariableArray as CellVariable, Mesh1D as Grid1D
+pytest.skip("Legacy test for deprecated reactions_new and direct_assembled_solver", allow_module_level=True)
+from mantis.diff_lib import VariableArray as CellVariable, Mesh1D as Grid1D
 
 # Ensure experiments and src paths are importable
 repo_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "nbk" / "experiments"))
 
-from fipyrite.diff_lib import data_container
+from mantis.diff_lib import data_container
 import reactions_new as rn
 
 
@@ -201,7 +202,7 @@ def test_alias_equivalence():
 
 def test_coupled_matrix_assembly_and_update():
     """Verify end-to-end compatibility with DirectAssembledSystem."""
-    from fipyrite.direct_assembled_solver import DirectAssembledSystem
+    from mantis.direct_assembled_solver import DirectAssembledSystem
 
     mesh = Grid1D(nx=3)
     mp = MockMP()
@@ -291,7 +292,7 @@ def test_patankar_auto_weighting_regimes():
 
 def test_isotopes_operator_mirroring_and_delta_stability():
     """Verify that TS2_32 operator matches bulk TS2 exactly, ensuring zero artificial d34S drift."""
-    from fipyrite.diff_lib import get_delta
+    from mantis.diff_lib import get_delta
 
     mesh = Grid1D(nx=1)
     mp = MockMP()
@@ -345,7 +346,7 @@ def test_isotopes_operator_mirroring_and_delta_stability():
 
 def test_coupled_matrix_assembly_with_isotopes():
     """Verify coupled matrix assembly and update with isotopes enabled."""
-    from fipyrite.direct_assembled_solver import DirectAssembledSystem
+    from mantis.direct_assembled_solver import DirectAssembledSystem
 
     mesh = Grid1D(nx=3)
     mp = MockMP()

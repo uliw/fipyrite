@@ -2,7 +2,7 @@
 
 import numpy as np
 import pytest
-from fipyrite.diff_lib import check_reactant_coexistence, data_container
+from mantis.diff_lib import check_reactant_coexistence, data_container
 
 
 def test_reactant_coexistence_well_resolved():

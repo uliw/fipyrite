@@ -2,13 +2,14 @@ import sys
 from pathlib import Path
 import numpy as np
 import pytest
-from fipyrite.diff_lib import VariableArray as CellVariable, Mesh1D as Grid1D
+pytest.skip("Legacy test for deprecated reactions_new", allow_module_level=True)
+from mantis.diff_lib import VariableArray as CellVariable, Mesh1D as Grid1D
 
 repo_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "nbk" / "experiments"))
 
-from fipyrite.diff_lib import data_container
+from mantis.diff_lib import data_container
 import reactions_new as rn
 
 

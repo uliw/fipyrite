@@ -7,7 +7,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 # Import project-specific modules
-import fipyrite.plot_data_new as plot_data_new
+import mantis.plot_data_new as plot_data_new
 
 class PlotUpdateHandler(FileSystemEventHandler):
     """Handles file system events for the results CSV."""

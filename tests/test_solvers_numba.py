@@ -1,12 +1,12 @@
 """
-Unit tests for Numba-accelerated solvers in fipyrite.solvers_numba.
+Unit tests for Numba-accelerated solvers in mantis.solvers_numba.
 """
 
 import numpy as np
 import pytest
 from scipy.linalg import solve_banded
 
-from fipyrite.solvers_numba import solve_tridiagonal_thomas
+from mantis.solvers_numba import solve_tridiagonal_thomas
 
 
 def test_solve_tridiagonal_thomas_accuracy():
@@ -62,7 +62,7 @@ def test_solve_tridiagonal_thomas_reproducibility():
 
 def test_compute_species_residual_wrms_accuracy():
     """Verify compute_species_residual_wrms produces identical result to NumPy reference."""
-    from fipyrite.solvers_numba import compute_species_residual_wrms, compute_species_residual_linf
+    from mantis.solvers_numba import compute_species_residual_wrms, compute_species_residual_linf
 
     rng = np.random.default_rng(99)
     N = 500
@@ -88,7 +88,7 @@ def test_compute_species_residual_wrms_accuracy():
 def test_solve_block_tridiagonal_thomas_accuracy():
     """Verify solve_block_tridiagonal_thomas matches dense scipy.linalg.solve to < 1e-12."""
     from scipy.linalg import solve
-    from fipyrite.solvers_numba import solve_block_tridiagonal_thomas
+    from mantis.solvers_numba import solve_block_tridiagonal_thomas
 
     rng = np.random.default_rng(42)
 

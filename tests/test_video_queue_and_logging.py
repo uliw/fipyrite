@@ -5,8 +5,8 @@ import multiprocessing as mp
 import numpy as np
 import pytest
 
-from fipyrite.live_plot_lib import BoundedVideoQueue, parse_time_to_seconds
-from fipyrite.direct_assembled_solver import GovernorStats
+from mantis.live_plot_lib import BoundedVideoQueue, parse_time_to_seconds
+from mantis.monolithic_solver import GovernorStats
 
 
 def test_parse_time_to_seconds():

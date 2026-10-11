@@ -3,9 +3,9 @@ requires = ["setuptools>=64", "setuptools-scm[toml]>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fipyrite"
+name = "mantis"
 version = "0.1.0"
-description = "A reaction transport model of pyrite formation"
+description = "MANTIS: A Monolithic Assembly of Nonlinear Transport Interactions Solver"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = ["numpy", "pandas", "matplotlib", "numba", "watchdog", "chempy", "argparse", "pytest"]
@@ -14,18 +14,18 @@ license = {text = "GPL3"}          # keep in sync with LICENSE file
 authors = [
     {name = "Uli Wortmann", email = "uli.wortmann@utoronto.ca"},
 ]
-keywords = ["reaction transport modeling"]
+keywords = ["reaction transport modeling", "geochemistry", "monolithic solver", "diagenesis"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: GPL3",
     "Operating System :: OS Independent",
 ]
 [project.scripts]
-generate-equations = "fipyrite.generate_equation_system:main"
-generate_equations = "fipyrite.generate_equation_system:main"
-generate-equation-system = "fipyrite.generate_equation_system:main"
-generate_equation_system = "fipyrite.generate_equation_system:main"
-plot_data_new = "fipyrite.plot_data_new:main"
+generate-equations = "mantis.generate_equation_system:main"
+generate_equations = "mantis.generate_equation_system:main"
+generate-equation-system = "mantis.generate_equation_system:main"
+generate_equation_system = "mantis.generate_equation_system:main"
+plot_data_new = "mantis.plot_data_new:main"
 
 
 # Optional extras (e.g. for development, testing, docs)
@@ -36,7 +36,7 @@ doc = ["sphinx"]
 
 # Automatic version from git tags
 [tool.setuptools_scm]
-write_to = "src/fipy-pyrite-burial/_version.py"
+write_to = "src/mantis/_version.py"
 
 [tool.ruff]
 preview = true
@@ -108,3 +108,7 @@ typeCheckingMode = 'basic'
 
 pythonVersion = "3.14"
 pythonPlatform = "Linux"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

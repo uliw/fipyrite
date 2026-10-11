@@ -1,5 +1,5 @@
 """
-Utility library for the fipyrite package.
+Utility library for the mantis package.
 
 This package provides a small collection of functions and a lightweight container class
 used throughout the Pyrite Burial model.

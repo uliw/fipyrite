@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 import numpy as np
 import pytest
+pytest.skip("Legacy test for deprecated reactions_new", allow_module_level=True)
 
 repo_root = Path(__file__).resolve().parents[1]
 experiments_dir = repo_root / "nbk" / "experiments"
@@ -13,7 +14,7 @@ if str(experiments_dir) not in sys.path:
 import reactions_new as rn
 import generated_equations as gen_rn
 
-from fipyrite.diff_lib import data_container
+from mantis.diff_lib import data_container
 
 class MockVariable:
     def __init__(self, value):

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 import pytest
-from fipyrite.generate_equation_system import (
+from mantis.generate_equation_system import (
     ReactionSystemValidator,
     build_arg_parser,
     load_reactions_from_file,
@@ -10,9 +10,10 @@ from fipyrite.generate_equation_system import (
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-SPECIES_FILE = BASE_DIR / "nbk" / "experiments" / "species.py"
-CONSTANTS_FILE = BASE_DIR / "nbk" / "experiments" / "reaction_constants.py"
-LIMITERS_FILE = BASE_DIR / "nbk" / "experiments" / "limiters.py"
+EXP_DIR = BASE_DIR / "nbk" / "experiments"
+SPECIES_FILE = EXP_DIR / "species.py"
+CONSTANTS_FILE = EXP_DIR / "kinetic_constants_slow.py"
+LIMITERS_FILE = EXP_DIR / "fes_reactions.py"
 
 
 def test_validator_loading():
@@ -161,7 +162,7 @@ def test_cli_new_flags():
 
 def test_selective_reaction_inclusion(tmp_path):
     """Verify that only the reactions specified in the reactions file are included in DEFAULT_DIAGENETIC_REACTIONS and Jacobian."""
-    from fipyrite.generate_equation_system import EquationSystemGenerator
+    from mantis.generate_equation_system import EquationSystemGenerator
 
     validator = ReactionSystemValidator(
         species_path=SPECIES_FILE,
@@ -211,7 +212,7 @@ def test_selective_reaction_inclusion(tmp_path):
 def test_resolve_and_prepare_equations_timestamp_check(tmp_path, monkeypatch):
     """Verify resolve_and_prepare_equations regenerates on missing equations or outdated mtime."""
     import time
-    from fipyrite.generate_equation_system import resolve_and_prepare_equations
+    from mantis.generate_equation_system import resolve_and_prepare_equations
 
     # Create dummy reaction and support files in tmp_path
     rxn_file = tmp_path / "test_exp_reactions.py"
@@ -262,7 +263,7 @@ def test_resolve_and_prepare_equations_timestamp_check(tmp_path, monkeypatch):
 
 def test_fes2_precipitation_ts2_generation():
     """Verify FeS2_precipitation_TS2 is generated in DEFAULT_DIAGENETIC_REACTIONS and Jacobian."""
-    from fipyrite.generate_equation_system import EquationSystemGenerator
+    from mantis.generate_equation_system import EquationSystemGenerator
 
     validator = ReactionSystemValidator(
         species_path=SPECIES_FILE,
@@ -298,7 +299,7 @@ def test_fes2_precipitation_ts2_generation():
 
 def test_unrecognized_reaction_raises_value_error():
     """Verify that an unrecognized reaction stoichiometry raises a ValueError."""
-    from fipyrite.generate_equation_system import EquationSystemGenerator
+    from mantis.generate_equation_system import EquationSystemGenerator
 
     validator = ReactionSystemValidator(
         species_path=SPECIES_FILE,
@@ -320,7 +321,7 @@ def test_unrecognized_reaction_raises_value_error():
 
 def test_arbitrary_reaction_name_classified_and_generated():
     """Verify that reaction names are arbitrary and reactions are classified by stoichiometry."""
-    from fipyrite.generate_equation_system import EquationSystemGenerator
+    from mantis.generate_equation_system import EquationSystemGenerator
 
     validator = ReactionSystemValidator(
         species_path=SPECIES_FILE,
@@ -348,7 +349,7 @@ def test_arbitrary_reaction_name_classified_and_generated():
 
 def test_missing_reactions_file_raises_filenotfound(tmp_path):
     """Verify that a missing reactions file immediately raises FileNotFoundError without silent fallback."""
-    from fipyrite.generate_equation_system import resolve_and_prepare_equations
+    from mantis.generate_equation_system import resolve_and_prepare_equations
 
     p_dict = {
         "experiment": "non_existent_experiment",

@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from fipyrite.plot_data_new import (
+from mantis.plot_data_new import (
     BrokenLocator,
     BrokenYScale,
     _apply_matplotlib_options,
@@ -194,7 +194,7 @@ def test_broken_axis_method():
 
 
 def test_species_delta_thresholding():
-    from fipyrite.diff_lib import get_delta, get_species_delta_threshold, is_solid_species
+    from mantis.diff_lib import get_delta, get_species_delta_threshold, is_solid_species
 
     class DummyMP:
         phi = 0.8
