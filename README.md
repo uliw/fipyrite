@@ -1,2 +1,2 @@
-A reaction transport model for diagenetic reactions in marine sediments
-  
+ # MANTIS: A *M*onolithic *A*ssembly of *N*onlinear *T*ransport *I*nteractions *S*olver
+ 
