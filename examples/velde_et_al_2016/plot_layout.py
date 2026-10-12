@@ -168,7 +168,7 @@ def get_layout(df):
                 "xlim": (1e-4, None),
                 # "ylim": (-15, 75),
                 # "right": [[df.d_h2s, "d_h2s", {"color": "C1"}]],
-                "options-left": ["broken_axis(-45, -40, 20, 25)"],
+                "options-left": ["broken_axis(-45, -37, 20, 30)"],
             },
         })
 
