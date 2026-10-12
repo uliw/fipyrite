@@ -827,6 +827,22 @@ def run_non_steady_state_solver_monolithic(
                 if pct >= next_milestone_pct:
                     next_milestone_pct += 10
 
+            # Grid-independent spatial L2 steady-state check
+            dz_weights = (mono_system.vol / np.sum(mono_system.vol))[:, None]
+            rms_change_per_sp = np.sqrt(np.sum(((u_curr - u_old)**2) * dz_weights, axis=0))
+            rms_change = float(np.max(rms_change_per_sp))
+
+            steady_tol = getattr(mp, "steady_state_tolerance", None)
+            if steady_tol is None:
+                dt_tol = getattr(mp, "dt_tolerance", None)
+                if dt_tol is not None and dt_tol > 1e-11:
+                    steady_tol = dt_tol
+
+            if steady_tol is not None and rms_change < steady_tol and step > 5:
+                status = f"Steady State Met: rms_change {rms_change:.2e} < tolerance {steady_tol:.2e}"
+                print(f"\n[Solver] {status} at time={get_time_units(total_time):.2f~P} (step {step}).", flush=True)
+                break
+
             # Live plotting / Video frame dispatch
             if plot_queue is not None and video_dt_sec is not None:
                 if (total_time - last_video_time) >= video_dt_sec or step == 1 or total_time >= t_end:
