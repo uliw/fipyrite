@@ -292,6 +292,10 @@ class DiageneticModel:
                 self.p_dict["max_depth"] = _to_m(val)
             elif key == "display_length":
                 self.p_dict["display_length"] = _to_m(val)
+            elif key in ("initial_spacing", "reaction_zone_spacing", "max_spacing"):
+                self.p_dict[key] = _to_m(val)
+            elif key == "reaction_zone" and isinstance(val, (tuple, list)):
+                self.p_dict["reaction_zone"] = (_to_m(val[0]), _to_m(val[1]))
             elif key == "t_end":
                 self.p_dict["t_end"] = _to_sec(val)
             elif key == "dt_max":
@@ -320,6 +324,11 @@ class DiageneticModel:
                 self.p_dict["video_dt"] = val
             elif key == "pH":
                 self.p_dict["pH"] = float(val)
+            elif key in ("steady_state_tolerance", "dt_tolerance"):
+                self.p_dict["steady_state_tolerance"] = float(val)
+                self.p_dict["dt_tolerance"] = float(val)
+            elif key == "check_reactant_coexistence":
+                self.p_dict["check_reactant_coexistence"] = bool(val)
             else:
                 self.p_dict[key] = val
 
@@ -922,6 +931,20 @@ class DiageneticModel:
         finally:
             if plotter:
                 plotter.stop()
+
+        # Run post-simulation reactant coexistence diagnostic by default
+        if getattr(self.mp, "check_reactant_coexistence", True):
+            try:
+                from .diff_lib import check_reactant_coexistence
+                check_reactant_coexistence(
+                    mesh_or_z=self._mesh if self._mesh is not None else self.mp.z,
+                    c=self._c,
+                    k=self._k,
+                    D_mol=self._D_mol,
+                    verbose=True,
+                )
+            except Exception as e:
+                print(f"[Warning] Reactant coexistence diagnostic failed: {e}")
 
         max_steps = getattr(self.mp, "max_steps", None)
         converged = "Yes" if (max_steps is None or step < max_steps) else "No"
