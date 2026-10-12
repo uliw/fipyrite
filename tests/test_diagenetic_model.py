@@ -8,7 +8,7 @@ import pytest
 from mantis import DiageneticModel
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-EXP_DIR = BASE_DIR / "nbk" / "experiments"
+EXP_DIR = BASE_DIR / "examples" / "velde_et_al_2016"
 
 
 def test_diagenetic_model_experiment_name_derivation():

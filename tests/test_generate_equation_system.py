@@ -10,7 +10,7 @@ from mantis.generate_equation_system import (
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-EXP_DIR = BASE_DIR / "nbk" / "experiments"
+EXP_DIR = BASE_DIR / "examples" / "velde_et_al_2016"
 SPECIES_FILE = EXP_DIR / "species.py"
 CONSTANTS_FILE = EXP_DIR / "kinetic_constants_slow.py"
 LIMITERS_FILE = EXP_DIR / "fes_reactions.py"
@@ -362,5 +362,4 @@ def test_missing_reactions_file_raises_filenotfound(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="Declarative reactions file not found"):
         resolve_and_prepare_equations(p_dict, base_dir=tmp_path)
-
 
