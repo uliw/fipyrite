@@ -27,6 +27,7 @@ These helpers are primarily intended for modelling isotope diffusion and fractio
 processes in geological simulations.
 """
 
+from typing import Any, Union
 import numpy as np
 
 
@@ -98,7 +99,9 @@ class Mesh1D:
         self.cellVolumes = self.dx
         self.numberOfCells = len(self.dx)
         self.faceCoordinates = np.concatenate(([0.0], np.cumsum(self.dx)))
-        self.cellCenters = np.array([(self.faceCoordinates[:-1] + self.faceCoordinates[1:]) / 2.0])
+        self.cellCenters = np.array([
+            (self.faceCoordinates[:-1] + self.faceCoordinates[1:]) / 2.0
+        ])
         self.faceCenters = np.array([self.faceCoordinates])
         self._cellDistances = np.concatenate((
             [self.dx[0] / 2.0],
@@ -205,7 +208,11 @@ class VariableArray(ArrayProxy):
     def setValue(self, val, where=None):
         if where is not None:
             mask = where.value if hasattr(where, "value") else where
-            if isinstance(mask, np.ndarray) and mask.dtype == bool and len(mask) == len(self.value) + 1:
+            if (
+                isinstance(mask, np.ndarray)
+                and mask.dtype == bool
+                and len(mask) == len(self.value) + 1
+            ):
                 if mask[0]:
                     self.value[0] = np.asarray(val)
                 if mask[-1]:
@@ -280,7 +287,9 @@ def get_delta(c, li, r, threshold: Union[float, np.ndarray, None] = 1e-6):
     return d
 
 
-def get_delta_from_concentration(c, li, r, threshold: Union[float, np.ndarray, None] = 1e-6):
+def get_delta_from_concentration(
+    c, li, r, threshold: Union[float, np.ndarray, None] = 1e-6
+):
     """Calculate the delta from the mass of light and heavy isotope.
 
     :param c: total mass/concentration
@@ -376,15 +385,23 @@ def get_species_delta_threshold(
             f"{species_name.lower()}_delta_threshold",
             f"{base_name.lower()}_delta_threshold",
         ):
-            val = getattr(mp, candidate, None) if hasattr(mp, candidate) else (mp.get(candidate) if isinstance(mp, dict) else None)
+            val = (
+                getattr(mp, candidate, None)
+                if hasattr(mp, candidate)
+                else (mp.get(candidate) if isinstance(mp, dict) else None)
+            )
             if val is not None:
                 return float(val)
 
     # 2. Phase-specific overrides / defaults
-    thresh_liq = float(getattr(mp, "delta_threshold_liquid", 0.001)) if mp is not None else 0.001
+    thresh_liq = (
+        float(getattr(mp, "delta_threshold_liquid", 0.001)) if mp is not None else 0.001
+    )
 
     if is_solid_species(species_name, mp=mp):
-        custom_solid = getattr(mp, "delta_threshold_solid", None) if mp is not None else None
+        custom_solid = (
+            getattr(mp, "delta_threshold_solid", None) if mp is not None else None
+        )
         if custom_solid is not None:
             return float(custom_solid)
 
@@ -398,10 +415,11 @@ def get_species_delta_threshold(
             phi_arr = np.asarray(phi, dtype=float)
             denom = np.maximum(1.0 - phi_arr, 1e-12)
             return thresh_liq * phi_arr / denom
-        return thresh_liq * 4.0  # default phi=0.8 fallback -> thresh_liq * (0.8 / 0.2) = 0.004
+        return (
+            thresh_liq * 4.0
+        )  # default phi=0.8 fallback -> thresh_liq * (0.8 / 0.2) = 0.004
     else:
         return thresh_liq
-
 
 
 def get_l_mass(m, d, r):
@@ -639,7 +657,9 @@ def make_grid(L, initial_spacing, max_spacing, r=1.05):
     return mesh, z_centers
 
 
-def save_data(mp, c, k, species_list, z, D_mol, diagenetic_reactions, equilibrium_reactions=None):
+def save_data(
+    mp, c, k, species_list, z, D_mol, diagenetic_reactions, equilibrium_reactions=None
+):
     """
     Save the model results to a CSV file (Synchronous).
     """
@@ -647,7 +667,7 @@ def save_data(mp, c, k, species_list, z, D_mol, diagenetic_reactions, equilibriu
     mp_numpy = data_container(mp)
     mp_numpy.phi = ArrayProxy(mp.phi.value)
     f_final, RATES = diagenetic_reactions(mp_numpy, c_numpy, k, data_container())
-   
+
     return _save_data_to_disk(mp, c, k, species_list, z, D_mol, f_final)
 
 
@@ -1095,6 +1115,7 @@ def _get_executor():
     global _executor
     if _executor is None:
         from concurrent.futures import ThreadPoolExecutor
+
         _executor = ThreadPoolExecutor(max_workers=1)
     return _executor
 
@@ -1294,7 +1315,9 @@ def check_reactant_coexistence(
         dz_peak = float(dz[idx_peak])
 
         total_flux = float(np.sum(r_proxy * dz))
-        peak_cell_flux_frac = float((r_proxy[idx_peak] * dz_peak) / (total_flux + 1e-30))
+        peak_cell_flux_frac = float(
+            (r_proxy[idx_peak] * dz_peak) / (total_flux + 1e-30)
+        )
 
         # Resolve rate constant and diffusion coefficient only if explicitly provided
         k_val = rxn.get("k")
@@ -1318,7 +1341,14 @@ def check_reactant_coexistence(
 
         d_eff = rxn.get("D_eff")
         if d_eff is None and D_mol is not None:
-            cand_list = [sp_a, sp_b, sp_a.upper(), sp_b.upper(), sp_a.lower(), sp_b.lower()]
+            cand_list = [
+                sp_a,
+                sp_b,
+                sp_a.upper(),
+                sp_b.upper(),
+                sp_a.lower(),
+                sp_b.lower(),
+            ]
             if sp_a in ("fe2", "Fe2") or sp_b in ("fe2", "Fe2"):
                 cand_list += ["Fe2_total", "fe2_total", "Fe2", "fe2"]
             if sp_a in ("TS2", "h2s") or sp_b in ("TS2", "h2s"):
@@ -1368,13 +1398,19 @@ def check_reactant_coexistence(
         reasons = []
         if n_cells < min_cells_resolved:
             is_warning = True
-            reasons.append(f"Front span ({n_cells} cells) < recommended minimum ({min_cells_resolved})")
+            reasons.append(
+                f"Front span ({n_cells} cells) < recommended minimum ({min_cells_resolved})"
+            )
         if peak_cell_flux_frac > 0.5:
             is_warning = True
-            reasons.append(f"Peak cell contains {peak_cell_flux_frac * 100:.1f}% (>50%) of reaction flux")
+            reasons.append(
+                f"Peak cell contains {peak_cell_flux_frac * 100:.1f}% (>50%) of reaction flux"
+            )
         if delta_phys is not None and dz_peak > (2.0 * delta_phys):
             is_warning = True
-            reasons.append(f"Local grid cell dz ({dz_peak * 1e3:.2f} mm) > 2x physical front width ({delta_phys * 1e3:.2f} mm)")
+            reasons.append(
+                f"Local grid cell dz ({dz_peak * 1e3:.2f} mm) > 2x physical front width ({delta_phys * 1e3:.2f} mm)"
+            )
 
         z_front_min = float(np.min(z[front_mask]))
         z_front_max = float(np.max(z[front_mask]))
@@ -1401,7 +1437,9 @@ def check_reactant_coexistence(
 
         if is_warning:
             da_ii_str = f"{da_ii:.1e}" if da_ii is not None else "N/A"
-            delta_phys_str = f"{delta_phys * 1e3:.2f} mm" if delta_phys is not None else "N/A"
+            delta_phys_str = (
+                f"{delta_phys * 1e3:.2f} mm" if delta_phys is not None else "N/A"
+            )
             msg = (
                 f"\n[WARNING: Numerical Reactant Co-existence Detected]\n"
                 f"  Reaction: '{name}' ({sp_a} + {sp_b})\n"
@@ -1420,7 +1458,9 @@ def check_reactant_coexistence(
                 print(msg)
 
     if verbose and not warnings_found:
-        print("[CHECK PASSED] All tested reaction fronts are adequately resolved (no numerical co-existence detected).")
+        print(
+            "[CHECK PASSED] All tested reaction fronts are adequately resolved (no numerical co-existence detected)."
+        )
 
     return results
 
@@ -1456,9 +1496,9 @@ def save_data_async(
         return obj
 
     c_snap = data_container({s: snap(getattr(c, s)) for s in species_list})
-    f_snap = data_container(
-        {key: (None, None, snap(getattr(f_final, key)[2])) for key in f_final.keys()}
-    )
+    f_snap = data_container({
+        key: (None, None, snap(getattr(f_final, key)[2])) for key in f_final.keys()
+    })
     D_mol_snap = data_container({key: snap(val) for key, val in D_mol.items()})
 
     # Copy metadata
@@ -1483,11 +1523,13 @@ def save_data_async(
 
 _ureg = None
 
+
 def get_time_units(t):
     """Adjust time units between second to ky."""
     global _ureg
     if _ureg is None:
         import pint
+
         _ureg = pint.UnitRegistry()
     Q_ = _ureg.Quantity
 
@@ -1741,7 +1783,9 @@ def add_monod_sink(
         RHS[species] = RHS[species] + rem_eff
         RATES[species] -= bulk_rate
     else:
-        raise ValueError(f"Unknown Monod scheme '{scheme}'. Choose from 'picard', 'newton', or 'hybrid'.")
+        raise ValueError(
+            f"Unknown Monod scheme '{scheme}'. Choose from 'picard', 'newton', or 'hybrid'."
+        )
 
     if reaction is not None:
         key = f"r_{reaction}_{species}"
@@ -1845,7 +1889,7 @@ def add_coupled_reaction(
         else:
             ref_base = _get_base_species(ref_species)
             master_base = _get_base_species(master_species_name)
-            
+
             if ref_base == master_base:
                 stoich_ref_local = master_stoich
             else:
@@ -1862,7 +1906,7 @@ def add_coupled_reaction(
                             break
                     else:
                         stoich_ref_local = 1.0
-            
+
             scaling_factor = master_stoich / stoich_ref_local
 
     coeff_master_scaled = coeff_master * scaling_factor
@@ -1928,9 +1972,11 @@ def calculate_fractionated_coeff_32(coeff_total, c_total, c_32, alpha, eps=1e-20
     return coeff_total * alpha_eff / denom_ratio
 
 
-def partition_equilibrium_isotope_32(c_32, frac_target, frac_other, alpha_eq_32, eps=1e-30):
+def partition_equilibrium_isotope_32(
+    c_32, frac_target, frac_other, alpha_eq_32, eps=1e-30
+):
     """
-    Calculate the concentration of the 32S isotope in a partitioned species 
+    Calculate the concentration of the 32S isotope in a partitioned species
     under equilibrium fractionation.
     """
     denom = frac_target + alpha_eq_32 * frac_other + eps
