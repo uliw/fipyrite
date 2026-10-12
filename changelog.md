@@ -1,8 +1,20 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.1.2] - 2026-10-12
+
+### Added
+
+- **File Path Resolution & Diagnostic Error Handling**:
+  - Enhanced file path resolution in `DiageneticModel` (`_resolve`), searching the current working directory, the model script directory (`base_dir`), and fallback naming patterns (such as `<experiment>_reactions.py`).
+  - Implemented early file validation (`validate_simulation_files()`) during `DiageneticModel` initialization and setup to catch missing simulation files before simulation execution.
+  - Added informative error diagnostics (`[MANTIS ERROR]`) detailing exact search locations and resolution guidance when species, reactions, constants, limiters, or plot layout files are missing.
+  - Improved plot layout file resolution in `plot_data_new.load_layout_from_file` and `plot_summary` with clear error reporting and search path feedback.
+  - Added unit test suite in `tests/test_diagenetic_model.py` testing missing file scenarios, exit behavior, and directory resolution from both CWD and model base directories.
 
 ## [0.1.1] - 2026-10-12
 
