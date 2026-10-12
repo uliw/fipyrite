@@ -637,18 +637,18 @@ def load_layout_from_file(df, layout_path, measured_data_path=None):
     if not path.exists():
         import sys
         argv0_dir = pl.Path(sys.argv[0]).parent
-        fallback_path = argv0_dir / path.name
-        if fallback_path.exists():
-            path = fallback_path
+        fallback_cwd = pl.Path.cwd() / path.name
+        fallback_argv0 = argv0_dir / path.name
+        if fallback_cwd.exists():
+            path = fallback_cwd
+        elif fallback_argv0.exists():
+            path = fallback_argv0
         else:
-            fallback_path2 = pl.Path("experiments") / path.name
-            if fallback_path2.exists():
-                path = fallback_path2
-            else:
-                raise FileNotFoundError(
-                    f"Layout file not found: {layout_path} "
-                    f"(also searched at: {fallback_path} and {fallback_path2})"
-                )
+            raise FileNotFoundError(
+                f"Layout file not found: '{layout_path}'. "
+                f"Searched in current working directory ({pl.Path.cwd()}) "
+                f"and script directory ({argv0_dir})."
+            )
 
     # Use importlib to load the module from a file path
     spec = importlib.util.spec_from_file_location("dynamic_layout", path)

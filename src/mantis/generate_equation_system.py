@@ -465,11 +465,21 @@ def generate_equations(
     Path
         Path to the output equations module.
     """
-    reactions_p = Path(reactions_path).resolve()
+    def _find_path(p_in: str | Path) -> Path:
+        p = Path(p_in)
+        if p.exists():
+            return p.resolve()
+        if (Path.cwd() / p).exists():
+            return (Path.cwd() / p).resolve()
+        if (Path.cwd() / p.name).exists():
+            return (Path.cwd() / p.name).resolve()
+        return p.resolve()
+
+    reactions_p = _find_path(reactions_path)
     equations_p = Path(equations_path).resolve()
-    constants_p = Path(kinetic_constants_path).resolve()
-    limiters_p = Path(limiters_path).resolve() if limiters_path is not None else None
-    species_p = Path(species_path).resolve()
+    constants_p = _find_path(kinetic_constants_path)
+    limiters_p = _find_path(limiters_path) if limiters_path is not None else None
+    species_p = _find_path(species_path)
 
     if verbose:
         print(f"[MANTIS] Loading reactions from: {reactions_p}")
@@ -557,16 +567,13 @@ def resolve_and_prepare_equations(
         filename = default_name if (val is None or val == "file_name") else str(val)
         p = Path(filename)
         if p.is_absolute() and p.exists():
-            return p
-        # Check relative to base_dir
-        if (base_dir / p).exists():
-            return (base_dir / p).resolve()
+            return p.resolve()
         # Check relative to cwd
         if (Path.cwd() / p).exists():
             return (Path.cwd() / p).resolve()
-        # Check in nbk/experiments
-        if (Path.cwd() / "nbk" / "experiments" / p).exists():
-            return (Path.cwd() / "nbk" / "experiments" / p).resolve()
+        # Check relative to base_dir
+        if (base_dir / p).exists():
+            return (base_dir / p).resolve()
         return (base_dir / p).resolve()
 
     # Apply defaults if not specified or None
@@ -581,11 +588,13 @@ def resolve_and_prepare_equations(
     constants_path = _resolve(kc_val, "reaction_constants.py")
     species_path = _resolve(sp_val, "species.py")
 
-    # If limiters not explicitly specified in p_dict, check if base_dir has limiters.py
+    # If limiters not explicitly specified in p_dict, check if base_dir or cwd has limiters.py
     if lim_val is not None:
         limiters_path = _resolve(lim_val, "limiters.py")
     elif (base_dir / "limiters.py").exists():
         limiters_path = (base_dir / "limiters.py").resolve()
+    elif (Path.cwd() / "limiters.py").exists():
+        limiters_path = (Path.cwd() / "limiters.py").resolve()
     else:
         limiters_path = None
 

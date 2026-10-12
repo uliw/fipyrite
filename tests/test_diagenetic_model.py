@@ -63,3 +63,117 @@ def test_diagenetic_model_setup(tmp_path):
     assert hasattr(c, "TS2")
     assert hasattr(mp, "get_limiters")
     assert callable(mp.get_limiters)
+
+
+def test_diagenetic_model_missing_species_file_exits(tmp_path, capsys):
+    """Verify that a missing species file produces a suitable exit message and exits."""
+    model = DiageneticModel(
+        base_dir=tmp_path,
+        species="nonexistent_species.py",
+        reactions=EXP_DIR / "fes_reactions.py",
+        constants=EXP_DIR / "kinetic_constants_slow.py",
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        model.setup()
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "[MANTIS ERROR] Could not find species definitions file: 'nonexistent_species.py'" in captured.err
+    assert "Current working directory:" in captured.err
+    assert "Model directory:" in captured.err
+
+
+def test_diagenetic_model_missing_reactions_file_exits(tmp_path, capsys):
+    """Verify that a missing reactions file produces a suitable exit message and exits."""
+    model = DiageneticModel(
+        base_dir=tmp_path,
+        species=EXP_DIR / "species.py",
+        reactions="nonexistent_reactions.py",
+        constants=EXP_DIR / "kinetic_constants_slow.py",
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        model.setup()
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "[MANTIS ERROR] Could not find declarative reactions file: 'nonexistent_reactions.py'" in captured.err
+    assert "Current working directory:" in captured.err
+
+
+def test_diagenetic_model_missing_constants_file_exits(tmp_path, capsys):
+    """Verify that a missing constants file produces a suitable exit message and exits."""
+    model = DiageneticModel(
+        base_dir=tmp_path,
+        species=EXP_DIR / "species.py",
+        reactions=EXP_DIR / "fes_reactions.py",
+        constants="nonexistent_constants.py",
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        model.setup()
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "[MANTIS ERROR] Could not find reaction constants file: 'nonexistent_constants.py'" in captured.err
+
+
+def test_diagenetic_model_finds_files_in_cwd(tmp_path, monkeypatch):
+    """Verify that DiageneticModel finds simulation files in the current working directory."""
+    import shutil
+    shutil.copy(EXP_DIR / "species.py", tmp_path / "species.py")
+    shutil.copy(EXP_DIR / "fes_reactions.py", tmp_path / "fes_reactions.py")
+    shutil.copy(EXP_DIR / "kinetic_constants_slow.py", tmp_path / "kinetic_constants_slow.py")
+
+    monkeypatch.chdir(tmp_path)
+    model = DiageneticModel(
+        species="species.py",
+        reactions="fes_reactions.py",
+        constants="kinetic_constants_slow.py",
+    )
+    assert model.species_file == (tmp_path / "species.py").resolve()
+    assert model.reactions_file == (tmp_path / "fes_reactions.py").resolve()
+    assert model.constants_file == (tmp_path / "kinetic_constants_slow.py").resolve()
+
+
+def test_diagenetic_model_finds_files_in_model_directory(tmp_path):
+    """Verify that DiageneticModel finds simulation files in the directory where the model resides."""
+    import shutil
+    model_dir = tmp_path / "sim_subfolder"
+    model_dir.mkdir()
+    shutil.copy(EXP_DIR / "species.py", model_dir / "species.py")
+    shutil.copy(EXP_DIR / "fes_reactions.py", model_dir / "fes_reactions.py")
+    shutil.copy(EXP_DIR / "kinetic_constants_slow.py", model_dir / "kinetic_constants_slow.py")
+
+    model = DiageneticModel(
+        base_dir=model_dir,
+        species="species.py",
+        reactions="fes_reactions.py",
+        constants="kinetic_constants_slow.py",
+    )
+    assert model.species_file == (model_dir / "species.py").resolve()
+    assert model.reactions_file == (model_dir / "fes_reactions.py").resolve()
+    assert model.constants_file == (model_dir / "kinetic_constants_slow.py").resolve()
+
+
+def test_plot_summary_missing_layout_message(tmp_path, capsys):
+    """Verify that plot_summary displays a suitable message when layout file is not found."""
+    from mantis.model import DiageneticModelResult
+    from mantis.diff_lib import data_container
+    mp = data_container()
+    mp.plot_name = "test_run"
+    mp.max_depth = 1.0
+    mp._caller_dir = str(tmp_path)
+    result = DiageneticModelResult(
+        mp=mp,
+        c=data_container(),
+        k=data_container(),
+        species_list=[],
+        z=[],
+        D_mol=data_container(),
+        diagenetic_reactions=None,
+        converged="Yes",
+        step=1,
+        total_time=100.0,
+        df=None,
+    )
+    res = result.plot_summary(layout_file="nonexistent_layout.py")
+    assert res is None
+    captured = capsys.readouterr()
+    assert "[MANTIS ERROR] Plot layout file 'nonexistent_layout.py' not found." in captured.err
+

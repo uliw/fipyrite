@@ -94,14 +94,33 @@ class DiageneticModelResult:
         """Renders the final summary plot PDF."""
         import mantis.plot_data_new as pdn
         layout = layout_file or getattr(self.mp, "layout_file", "plot_layout.py")
-        if not Path(layout).exists() and hasattr(self.mp, "_caller_dir"):
-            candidate = Path(self.mp._caller_dir) / Path(layout).name
-            if candidate.exists():
-                layout = str(candidate)
-        if Path(layout).exists() and self.df is not None:
+        p_layout = Path(layout)
+        if not p_layout.is_absolute():
+            if (Path.cwd() / p_layout).exists():
+                p_layout = Path.cwd() / p_layout
+            elif hasattr(self.mp, "_caller_dir") and (Path(self.mp._caller_dir) / p_layout.name).exists():
+                p_layout = Path(self.mp._caller_dir) / p_layout.name
+            elif (Path.cwd() / p_layout.name).exists():
+                p_layout = Path.cwd() / p_layout.name
+            elif hasattr(self.mp, "_caller_dir") and (Path(self.mp._caller_dir) / p_layout).exists():
+                p_layout = Path(self.mp._caller_dir) / p_layout
+
+        if not p_layout.exists():
+            caller_dir = getattr(self.mp, "_caller_dir", Path.cwd())
+            print(
+                f"\n[MANTIS ERROR] Plot layout file '{layout}' not found.\n"
+                f"Searched in:\n"
+                f"  • Current working directory: {Path.cwd()}\n"
+                f"  • Model directory:           {caller_dir}\n"
+                f"Plot summary rendering skipped.\n",
+                file=sys.stderr,
+            )
+            return None
+
+        if self.df is not None:
             pdf_out = outfile or f"{self.mp.plot_name}.pdf"
             try:
-                plt_desc = pdn.load_layout_from_file(self.df, layout)
+                plt_desc = pdn.load_layout_from_file(self.df, str(p_layout))
                 pdn.plot(self.df, self.mp.max_depth, outfile=pdf_out, show=False, plot_description=plt_desc)
                 return pdf_out
             except Exception as e:
@@ -145,14 +164,6 @@ class DiageneticModel:
         else:
             self.base_dir = Path.cwd()
 
-        # 2. Resolve filenames relative to base_dir or cwd
-        self.species_file = self._resolve(species)
-        self.reactions_file = self._resolve(reactions)
-        self.constants_file = self._resolve(constants)
-        self.equations_file = self._resolve(equations) if equations else None
-        self.limiters_file = self._resolve(limiters) if limiters else None
-        self.layout_file = self._resolve(layout)
-
         # Derive experiment name automatically from caller filename stem
         if experiment is not None:
             self.experiment = experiment
@@ -162,6 +173,29 @@ class DiageneticModel:
             self.experiment = Path(sys.argv[0]).stem
         else:
             self.experiment = "diagenetic_run"
+
+        # 2. Store original user inputs for clear diagnostics
+        self._orig_species = species
+        self._orig_reactions = reactions
+        self._orig_constants = constants
+        self._orig_equations = equations
+        self._orig_limiters = limiters
+        self._orig_layout = layout
+
+        # 3. Resolve filenames relative to cwd or base_dir (wherever the model resides)
+        self.species_file = self._resolve(species)
+        rxn_fallbacks = [f"{self.experiment}_reactions.py"] if str(reactions) == "reactions.py" else None
+        self.reactions_file = self._resolve(reactions, fallbacks=rxn_fallbacks)
+        self.constants_file = self._resolve(constants)
+        self.equations_file = self._resolve(equations) if equations else None
+        self.limiters_file = self._resolve(limiters) if limiters else None
+        self.layout_file = self._resolve(layout)
+
+        # 4. If running as a script (not querying CLI help/options or in pytest), validate files immediately
+        is_cli_query = any(arg in sys.argv for arg in ("-h", "--help", "--solver", "--video", "--run"))
+        in_pytest = "pytest" in sys.modules or (sys.argv and Path(sys.argv[0]).name.startswith("pytest"))
+        if not is_cli_query and not in_pytest:
+            self.validate_simulation_files()
 
         self.ureg = pint.UnitRegistry()
         self.Q_ = self.ureg.Quantity
@@ -173,15 +207,58 @@ class DiageneticModel:
         # Default parameters
         self._init_defaults()
 
-    def _resolve(self, path_like: Union[str, Path]) -> Path:
+    def _exit_with_missing_file_error(self, filename: Union[str, Path], file_description: str) -> None:
+        """Prints a user-friendly error message and exits when a simulation file cannot be found."""
+        print(f"\n[MANTIS ERROR] Could not find {file_description}: '{filename}'", file=sys.stderr)
+        print("Searched locations:", file=sys.stderr)
+        print(f"  • Current working directory: {Path.cwd()}", file=sys.stderr)
+        if self.base_dir.resolve() != Path.cwd().resolve():
+            print(f"  • Model directory:           {self.base_dir}", file=sys.stderr)
+        print(
+            f"\nPlease ensure that '{filename}' is located in the current working directory "
+            f"or the directory where the model script resides ({self.base_dir}).\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    def validate_simulation_files(self) -> None:
+        """Validates that all required files describing the simulation exist in cwd or model directory."""
+        if not self.species_file.exists():
+            self._exit_with_missing_file_error(self._orig_species, "species definitions file")
+        if not self.reactions_file.exists():
+            self._exit_with_missing_file_error(self._orig_reactions, "declarative reactions file")
+        if not self.constants_file.exists():
+            self._exit_with_missing_file_error(self._orig_constants, "reaction constants file")
+        if self._orig_limiters is not None and self.limiters_file is not None and not self.limiters_file.exists():
+            self._exit_with_missing_file_error(self._orig_limiters, "limiters file")
+
+    def _resolve(self, path_like: Union[str, Path], fallbacks: Optional[List[str]] = None) -> Path:
         p = Path(path_like)
+        # Check absolute path
         if p.is_absolute() and p.exists():
-            return p
-        if (self.base_dir / p).exists():
-            return (self.base_dir / p).resolve()
+            return p.resolve()
+
+        # Check in current working directory
         if (Path.cwd() / p).exists():
             return (Path.cwd() / p).resolve()
-        return (self.base_dir / p).resolve()
+
+        # Check in model directory (base_dir)
+        if (self.base_dir / p).exists():
+            return (self.base_dir / p).resolve()
+
+        # Check fallbacks if provided
+        if fallbacks:
+            for fb in fallbacks:
+                fb_p = Path(fb)
+                if (Path.cwd() / fb_p).exists():
+                    return (Path.cwd() / fb_p).resolve()
+                if (self.base_dir / fb_p).exists():
+                    return (self.base_dir / fb_p).resolve()
+
+        # Fallback to model directory or cwd
+        if self.base_dir != Path.cwd():
+            return (self.base_dir / p).resolve()
+        return (Path.cwd() / p).resolve()
 
     def _init_defaults(self) -> None:
         """Initializes default physical, geometric, and numerical solver parameters."""
@@ -556,6 +633,8 @@ class DiageneticModel:
 
     def _load_species_definitions(self) -> Dict[str, Any]:
         """Loads and parses the species definitions dictionary from species.py."""
+        if not self.species_file.exists():
+            self._exit_with_missing_file_error(self._orig_species, "species definitions file")
         spec = importlib.util.spec_from_file_location("species_mod", self.species_file)
         if spec is None or spec.loader is None:
             raise ImportError(f"Cannot load species file: {self.species_file}")
@@ -568,6 +647,7 @@ class DiageneticModel:
 
     def setup(self, plot_queue=None) -> Tuple[data_container, data_container, data_container, List[str], np.ndarray, data_container, Any]:
         """Assembles grid, species variables, transport coefficients, and compiles reaction equations."""
+        self.validate_simulation_files()
         self.mp.update(self.p_dict)
         self.mp._caller_dir = str(self.base_dir)
 
@@ -885,6 +965,8 @@ class DiageneticModel:
         plotter = None
         video_dt = getattr(self.mp, "video_dt", None)
         if plot_queue is None and video_dt is not None:
+            if not self.layout_file.exists():
+                self._exit_with_missing_file_error(self._orig_layout, "plot layout file (required for video recording)")
             output_path = f"{self.mp.plot_name}.pdf"
             video_path = os.path.abspath(f"{self.mp.plot_name}.mp4")
             plotter = LivePlotter(
