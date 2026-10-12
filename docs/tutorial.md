@@ -166,6 +166,85 @@ species = {
 }
 ```
 
+# Concentration Units & Conversions: Inputs, Internal Engine, and Outputs
+
+A common source of confusion in diagenetic modeling is the distinction between porewater solute concentrations, solid sediment mineral concentrations, and geochemical laboratory units (such as $\text{wt}\%$ or $\mu\text{mol/g}$). MANTIS handles physical units transparently while maintaining strict mass conservation across phases.
+
+## 1. Default Input Units
+
+When defining your model setup and boundary conditions:
+
+- **Driver Script Parameters (`run_velde_model.py`)**:
+  MANTIS supports human-readable strings parsed via Python's `pint` physical unit library:
+  - Lengths and depths: `"0.5 m"`, `"50 cm"`
+  - Times and time steps: `"0.5 kyr"`, `"1 year"`, `"24 hours"`
+  - Sedimentation rates: `"0.2 cm/yr"`, `"1 mm/a"`
+  - Bioturbation coefficients: `"4 cm^2/year"`, `"1e-9 m^2/s"`
+
+- **Boundary Conditions (`species.py`)**:
+  - **Dissolved Solutes (`type: "dissolved"`)**:
+    Upper boundary concentrations can be specified as a numeric float or a unit string. The default numeric input is **$\text{mmol/L}$** (which is identical to $\text{mol/m}^3$ or $\text{mM}$).
+    ```text
+    "bc": {"top": 28.2, "type": "dissolved"}         # 28.2 mmol/L (seawater sulfate)
+    "bc": {"top": "280 umol/L", "type": "dissolved"} # parsed automatically to 0.28 mmol/L
+    ```
+  - **Particulate Solids (`type: "particulate"`)**:
+    Deposition at the sediment-water interface is specified as a depositional surface flux:
+    ```text
+    "bc": {"top": "12 umol/(cm^2 * yr)", "type": "particulate"}
+    ```
+    MANTIS automatically converts this to internal flux units ($\text{mol}/(\text{m}^2 \cdot \text{s})$) during initialization.
+
+## 2. How Units Are Handled Internally by the Solver
+
+Under the hood, MANTIS standardizes all transport and reaction PDEs into SI-derived volumetric units:
+$$\text{Internal Concentration Unit} = \mathbf{mol/m^3} \quad (\equiv 1\ \text{mmol/L} \equiv 1\ \text{mM} \equiv 1000\ \mu\text{mol/L} \equiv 1\ \mu\text{mol/cm}^3)$$
+
+Crucially, concentrations are defined **per unit volume of their respective phase**:
+1. **Liquid Solutes**: Expressed per volume of porewater ($\text{mol / m}^3_{\text{liquid}} = \text{mmol / L}_{\text{porewater}}$). The bulk sediment inventory is $\phi \cdot C_{\text{liquid}}$.
+2. **Solid Minerals**: Expressed per volume of pure solid sediment ($\text{mol / m}^3_{\text{solid}} = \text{mmol / L}_{\text{solid}}$). The bulk sediment inventory is $(1 - \phi) \cdot C_{\text{solid}}$.
+3. **Phase Transfer & Reactions**: Whenever a reaction couples a solid phase and a liquid phase (for example, $\text{Fe}^{2+} + \text{HS}^- \to \text{FeS}$), MANTIS scales the source and sink terms with the appropriate phase ratio ($(1-\phi)/\phi$ or $\phi/(1-\phi)$) so that mass is strictly conserved.
+4. **Reaction Rates**: Solved internally in $\text{mol} / (\text{m}^3_{\text{phase}} \cdot \text{s})$.
+5. **Depths and Transport**: Depth $z$ is in meters ($\text{m}$), time $t$ in seconds ($\text{s}$), and diffusion coefficients in $\text{m}^2/\text{s}$.
+
+## 3. Output Units in Result Files (`.csv`)
+
+When the simulation completes or exports data (`<model_name>.csv`):
+- `c_<species>`: Reported directly in **$\text{mmol/L}$** (numerically equivalent to $\text{mol/m}^3$):
+  - Solutes (e.g., `c_SO4`, `c_O2`, `c_TS2`) are in **$\text{mmol / L of porewater}$**.
+  - Solids (e.g., `c_FeS`, `c_Fe3`, `c_POC_slow`) are in **$\text{mmol / L of pure solid}$**.
+- `f_<species>`: Net production/consumption reaction rates in **$\text{mol} / (\text{m}^3 \cdot \text{s})$**.
+- `d_<species>`: Isotope delta values (e.g., `d_SO4`, `d_FeS`) in **$\permil$** (per mil relative to VCDT).
+- `z`: Depth below sediment-water interface in **meters** ($\text{m}$).
+- `phi` and `w`: Porosity (fraction, dimensionless) and burial velocity ($\text{m/s}$).
+
+## 4. Converting Solid Concentrations to Standard Geochemical Units
+
+Geochemists typically report solid mineral abundances as dry-sediment mass fractions ($\text{wt}\%$) or mass-normalized molar concentrations ($\mu\text{mol/g}$). MANTIS includes built-in conversion utilities in `mantis.diff_lib`:
+
+### A. Converting to $\mu\text{mol / g}$ (micromoles per gram of dry sediment)
+To convert a solid concentration $C_{\text{solid}}$ ($\text{mmol/L of solid} = \mu\text{mol/cm}^3_{\text{solid}}$) to $\mu\text{mol/g}$ of dry sediment, divide by the mineral grain density $\rho_{\text{sed}}$ (typically $2.6\ \text{g/cm}^3$ for siliciclastic sediments):
+$$C_{\mu\text{mol/g}} = \frac{C_{\text{solid}}}{\rho_{\text{sed}}}$$
+
+In Python:
+```python
+from mantis.diff_lib import solid_conc_to_umol_per_g
+
+# df.c_FeS is in mmol/L of solid; density in g/cm^3
+c_fes_umol_g = solid_conc_to_umol_per_g(df.c_FeS, d=2.6)
+```
+
+### B. Converting to Dry Weight Percent ($\text{wt}\%$)
+To convert $C_{\text{solid}}$ to weight percent of dry sediment matrix given molecular weight $M_w$ ($\text{g/mol}$):
+$$\text{wt}\% = \frac{C_{\text{solid}} \cdot M_w}{\rho_{\text{sed}} \cdot 10^4}$$
+
+In Python:
+```python
+from mantis.diff_lib import solid_conc_to_wt_percent
+
+# Example: FeS (Mw = 87.91 g/mol, density = 2.6 g/cm^3)
+fes_wt_pct = solid_conc_to_wt_percent(df.c_FeS, mw=87.91, d=2.6, phi=df.phi)
+```
 
 <a id="org809df99"></a>
 
@@ -375,6 +454,12 @@ if __name__ == "__main__":
             "BI0": 0.0,                # Set to 0.0 to disable; or e.g. "20 /year"
             "depth": "0 cm",
         },
+
+        # Spatial grid & reaction zone refinement (optional, defaults provided)
+        initial_spacing="0.1 mm",      # Spacing at sediment-water interface (z=0)
+        reaction_zone=("0.1 cm", "1.0 cm"), # Critical depth window of sharp redox fronts
+        reaction_zone_spacing="0.05 mm",    # Dense, uniform spacing in the reaction zone
+        max_spacing="1.0 cm",          # Coarser spacing in deep sediment
     )
 
     # 3. Allow CLI overrides (e.g. running --video from the terminal)
@@ -394,6 +479,51 @@ if __name__ == "__main__":
     result.plot_summary()
 ```
 
+
+## Spatial Grid Configuration & Reaction Zone Resolution
+
+Diagenetic models must resolve spatial scales ranging from sub-millimeter oxygen penetration depths to deep sediment columns spanning decimeters to hundreds of meters. A uniform fine grid across a 50-meter column would require millions of cells and slow down calculations unnecessarily.
+
+MANTIS solves this using an adaptive geometric-mesh builder (`make_grid2`) that refines where steep gradients occur and expands into the deep sediment.
+
+### 1. How Grid Generation Works (`make_grid2`)
+The grid structure is divided into four seamless stages from the sediment surface to depth:
+1. **Surface Section**: Starts at `initial_spacing` and geometrically refines cells downward toward `reaction_zone[0]`.
+2. **Reaction Zone Section**: Maintains a constant, ultra-fine cell size (`reaction_zone_spacing`) across the depth interval `reaction_zone = (z_start, z_end)`.
+3. **Coarsening Section**: Below the reaction zone, cell size expands geometrically by factor $r = 1.05$ per cell.
+4. **Deep Uniform Section**: Once cell size reaches `max_spacing`, the remainder of the domain down to `max_depth` uses uniform large cells.
+
+### 2. The Geochemical Importance of Reaction Zone Resolution
+Why does grid spacing in the reaction zone matter so much?
+Fast bimolecular redox reactions—such as ferrous iron oxidation ($\text{Fe}^{2+} + \text{O}_2 \to \text{Fe}^{3+}$) or sulfide oxidation—occur across exceedingly narrow interfaces. The physical reaction front width $\delta_{\text{phys}}$ is governed by the balance between molecular diffusion and reaction kinetics:
+$$\delta_{\text{phys}} \sim \sqrt{\frac{D_{\text{eff}}}{k \cdot C_{\text{scale}}}}$$
+For transport-controlled reactions with large kinetic constants ($k = 10^7\ \text{M}^{-1}\text{s}^{-1}$), $\delta_{\text{phys}}$ is often **under $0.05\text{ mm}$**.
+
+If your numerical grid cell size $\Delta z$ is larger than $2 \delta_{\text{phys}}$, the local Damköhler number is large ($Da_{II} \gg 1$). The finite-volume discretization cannot resolve the sharp counter-gradients, producing a numerical artifact called **artificial reactant coexistence**:
+- $\text{Fe}^{2+}$ and $\text{O}_2$ artificially overlap in the same cell.
+- Reactants diffuse past each other instead of reacting completely at the interface.
+- Apparent reaction rates become smeared over several millimeters to centimeters.
+
+### 3. Automated Coexistence Diagnostic
+MANTIS automatically runs a post-simulation front diagnostic (`check_reactant_coexistence`) at the end of every run. If any reaction front is under-resolved, MANTIS outputs a clear warning:
+```text
+[WARNING: Numerical Reactant Co-existence Detected]
+  Reaction: 'Fe2 Oxidation by O2' (fe2 + O2)
+  Front location (peak): z = 0.21 cm (depth cell index: 21)
+  Local grid resolution: dz = 0.10 mm
+  Estimated physical front width: 0.01 mm
+  Front cell span (N_cells): 6 cell(s)
+  Reasons: Local grid cell dz (0.10 mm) > 2x physical front width (0.01 mm)
+  --> Action recommended: In make_grid2(), refine the mesh around z = [0.19, 0.23] cm to reaction_zone_spacing <= 0.01 mm.
+```
+
+When you see this warning, simply update your driver script's `model.configure()` with the recommended reaction zone window and spacing:
+```python
+model.configure(
+    reaction_zone=("0.15 cm", "0.30 cm"),
+    reaction_zone_spacing="0.01 mm",
+)
+```
 
 <a id="orgf185086"></a>
 
