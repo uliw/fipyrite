@@ -1,56 +1,31 @@
-# Introduction: What is MANTIS?
+# MANTIS quickstart guide 
 
-Welcome to **MANTIS** (\*M\*onolithic \*A\*ssembly of \*N\*onlinear \*T\*ransport \*I\*nteractions \*S\*olver)! If you are a geochemist, sedimentologist, or marine geologist, you are likely familiar with the classic picture of early diagenesis in marine sediments:
+## Overall Model Architecture: What is Where?
 
--   Organic matter rains down onto the seafloor and is buried.
--   Microorganisms degrade this carbon using a succession of electron acceptors in order of decreasing thermodynamic yield (Oxygen $\to$ Nitrate $\to$ Manganese/Iron oxides $\to$ Sulfate $\to$ Methanogenesis).
--   Dissolved porewater species (like $\text{SO}_4^{2-}$, $\text{HS}^-$, and $\text{Fe}^{2+}$) diffuse and are bio-irrigated, while particulate phases (organic carbon, reactive iron oxides, pyrite) are buried and mixed by burrowing organisms (bioturbation).
--   Mineral phases precipitate (e.g., mackinawite $\text{FeS}$ and pyrite $\text{FeS}_2$) or dissolve, and stable isotope systems (such as $\delta^{34}\text{S}$) record these metabolic pathways in the geologic record.
-
-Traditionally, translating these natural concepts into a computer simulation required writing intricate numerical solvers, wrestling with differential equation discretization, and manually deriving Jacobian matrices.
-
-**MANTIS** changes this workflow. It is designed to decouple the **science** from the **numerical mechanics**:
-
-1.  You describe the **species**, **reactions**, **rate constants**, and **environmental boundary conditions** in clean, human-readable Python files.
-2.  MANTIS parses the stoichiometry, calculates exact mathematical Jacobians under the hood using symbolic computer algebra (SymPy), and solves the coupled reactive-transport system using an accelerated monolithic Block Newton solver.
-3.  You get publication-ready depth profiles, spreadsheets, and time-lapse videos of your sediment column.
-
-This guide walks you through setting up, configuring, running, and interpreting your own diagenetic simulations.
-
-
-<a id="org4417d27"></a>
-
-# Overall Model Architecture: What is Where?
-
-A typical MANTIS project directory contains five primary configuration files, alongside the master run script:
+A typical MANTIS project directory contains five primary configuration files, alongside the master run script. An working example is provided in the ~./examples~ directory 
 
 ```
-my_project/
+./velde_et_al_2016/
 ├── species.py                 <- Who lives in the sediment? (chemical species, phases, diffusion, BCs)
 ├── fes_reactions.py           <- What reactions happen? (stoichiometry, kinetics, limiters)
-├── kinetic_constants_slow.py  <- How fast do reactions happen? (rate constants, half-saturation values)
+├── kinetic_constants_fast.py  <- How fast do reactions happen? (rate constants, half-saturation values)
 ├── plot_layout.py             <- How should the profiles look? (panels, colors, geochemist units like wt%)
-└── run_velde_model.py         <- Master driver script (sediment accumulation rate, depth, duration)
+└── run_velde_model_fast.py         <- Master driver script (sediment accumulation rate, depth, duration)
 ```
 
-When you execute `python run_velde_model.py`, MANTIS automatically detects these files, ensures the underlying equation system is up to date, solves the time evolution of the sediment column, and produces your outputs:
+When you execute `python run_velde_model_fast.py`, MANTIS automatically detects these files, ensures the underlying equation system is up to date, solves the time evolution of the sediment column, and produces your outputs:
 
 -   `<model_name>.pdf`: A multi-panel summary plot of porewater and solid-phase profiles.
 -   `<model_name>.csv`: A tabular export of concentrations, reaction rates, and isotope ratios across depth.
 -   `<model_name>_state.npz`: The complete numerical state of the simulation for restarting or continuing runs.
--   `<model_name>.mp4` (optional): An animated video showing the transient evolution over hundreds or thousands of years.
+-   `<model_name>.mp4` (optional): An animated video showing the transient evolution
 
 
-<a id="orgc16f49a"></a>
-
-# Step 1: Defining Chemical Species (`species.py`)
+## Step 1: Defining Chemical Species (`species.py`)
 
 The `species.py` file is your geochemical inventory. It declares every chemical entity that exists in your model domain.
 
-
-<a id="orgba057ca"></a>
-
-## Understanding Phases: Dissolved vs. Solid vs. Mixed
+### Understanding Phases: Dissolved vs. Solid vs. Mixed
 
 In a sediment column, species exist in different physical compartments:
 
@@ -59,9 +34,7 @@ In a sediment column, species exist in different physical compartments:
 3.  **Mixed Pools**: Lumped entities like total ferrous iron ($\text{Fe}^{2+}_{\text{total}}$) that partition rapidly into a dissolved fraction and a surface-adsorbed fraction.
 
 
-<a id="org10d01d0"></a>
-
-## Example: Standard Species Configuration
+### Example: Standard Species Configuration
 
 Here is how common species are declared inside the `species` dictionary in `species.py`:
 
@@ -123,9 +96,7 @@ species = {
 ```
 
 
-<a id="orgd0812cc"></a>
-
-## Handling Diffusion Coefficients
+### Handling Diffusion Coefficients
 
 For dissolved ions, molecular diffusion coefficients in sediment are calculated using the empirical linear temperature formulation from **Boudreau (1996)** corrected for tortuosity via Archie's law: $$ D_0(T) = (m_0 + m_1 \cdot T) \times 10^{-10} \quad [\text{m}^2/\text{s}] $$ $$ D_{\text{sed}} = \frac{D_0(T)}{1 - \ln(\phi^2)} $$
 
@@ -137,9 +108,8 @@ For ions following this relationship, you simply set:
 ```
 
 
-<a id="org69559bb"></a>
 
-### Custom Diffusion Functions (e.g., Dissolved Oxygen)
+#### Custom Diffusion Functions (e.g., Dissolved Oxygen)
 
 Some species, such as dissolved $\text{O}_2$, require a non-standard formulation. You can declare your own custom diffusion function directly at the top of `species.py` and point to it by name:
 
@@ -166,15 +136,15 @@ species = {
 }
 ```
 
-# Concentration Units & Conversions: Inputs, Internal Engine, and Outputs
+## Concentration Units & Conversions: Inputs, Internal Engine, and Outputs
 
 A common source of confusion in diagenetic modeling is the distinction between porewater solute concentrations, solid sediment mineral concentrations, and geochemical laboratory units (such as $\text{wt}\%$ or $\mu\text{mol/g}$). MANTIS handles physical units transparently while maintaining strict mass conservation across phases.
 
-## 1. Default Input Units
+### 1. Default Input Units
 
 When defining your model setup and boundary conditions:
 
-- **Driver Script Parameters (`run_velde_model.py`)**:
+- **Driver Script Parameters (`run_velde_model_fast.py`)**:
   MANTIS supports human-readable strings parsed via Python's `pint` physical unit library:
   - Lengths and depths: `"0.5 m"`, `"50 cm"`
   - Times and time steps: `"0.5 kyr"`, `"1 year"`, `"24 hours"`
@@ -195,7 +165,7 @@ When defining your model setup and boundary conditions:
     ```
     MANTIS automatically converts this to internal flux units ($\text{mol}/(\text{m}^2 \cdot \text{s})$) during initialization.
 
-## 2. How Units Are Handled Internally by the Solver
+### 2. How Units Are Handled Internally by the Solver
 
 Under the hood, MANTIS standardizes all transport and reaction PDEs into SI-derived volumetric units:
 $$\text{Internal Concentration Unit} = \mathbf{mol/m^3} \quad (\equiv 1\ \text{mmol/L} \equiv 1\ \text{mM} \equiv 1000\ \mu\text{mol/L} \equiv 1\ \mu\text{mol/cm}^3)$$
@@ -207,7 +177,7 @@ Crucially, concentrations are defined **per unit volume of their respective phas
 4. **Reaction Rates**: Solved internally in $\text{mol} / (\text{m}^3_{\text{phase}} \cdot \text{s})$.
 5. **Depths and Transport**: Depth $z$ is in meters ($\text{m}$), time $t$ in seconds ($\text{s}$), and diffusion coefficients in $\text{m}^2/\text{s}$.
 
-## 3. Output Units in Result Files (`.csv`)
+### 3. Output Units in Result Files (`.csv`)
 
 When the simulation completes or exports data (`<model_name>.csv`):
 - `c_<species>`: Reported directly in **$\text{mmol/L}$** (numerically equivalent to $\text{mol/m}^3$):
@@ -218,11 +188,11 @@ When the simulation completes or exports data (`<model_name>.csv`):
 - `z`: Depth below sediment-water interface in **meters** ($\text{m}$).
 - `phi` and `w`: Porosity (fraction, dimensionless) and burial velocity ($\text{m/s}$).
 
-## 4. Converting Solid Concentrations to Standard Geochemical Units
+### 4. Converting Solid Concentrations to Standard Geochemical Units
 
 Geochemists typically report solid mineral abundances as dry-sediment mass fractions ($\text{wt}\%$) or mass-normalized molar concentrations ($\mu\text{mol/g}$). MANTIS includes built-in conversion utilities in `mantis.diff_lib`:
 
-### A. Converting to $\mu\text{mol / g}$ (micromoles per gram of dry sediment)
+#### A. Converting to $\mu\text{mol / g}$ (micromoles per gram of dry sediment)
 To convert a solid concentration $C_{\text{solid}}$ ($\text{mmol/L of solid} = \mu\text{mol/cm}^3_{\text{solid}}$) to $\mu\text{mol/g}$ of dry sediment, divide by the mineral grain density $\rho_{\text{sed}}$ (typically $2.6\ \text{g/cm}^3$ for siliciclastic sediments):
 $$C_{\mu\text{mol/g}} = \frac{C_{\text{solid}}}{\rho_{\text{sed}}}$$
 
@@ -234,7 +204,7 @@ from mantis.diff_lib import solid_conc_to_umol_per_g
 c_fes_umol_g = solid_conc_to_umol_per_g(df.c_FeS, d=2.6)
 ```
 
-### B. Converting to Dry Weight Percent ($\text{wt}\%$)
+#### B. Converting to Dry Weight Percent ($\text{wt}\%$)
 To convert $C_{\text{solid}}$ to weight percent of dry sediment matrix given molecular weight $M_w$ ($\text{g/mol}$):
 $$\text{wt}\% = \frac{C_{\text{solid}} \cdot M_w}{\rho_{\text{sed}} \cdot 10^4}$$
 
@@ -246,9 +216,8 @@ from mantis.diff_lib import solid_conc_to_wt_percent
 fes_wt_pct = solid_conc_to_wt_percent(df.c_FeS, mw=87.91, d=2.6, phi=df.phi)
 ```
 
-<a id="org809df99"></a>
 
-# Step 2: Defining Kinetic Constants (`kinetic_constants_*.py`)
+## Step 2: Defining Kinetic Constants (`kinetic_constants_*.py`)
 
 The kinetic constants file defines how fast reactions occur and the affinity thresholds of microbial communities.
 
@@ -259,9 +228,7 @@ In diagenesis, we typically distinguish:
 3.  **Inhibition Constants**: The threshold concentration of a more energetically favorable oxidant that shuts down a less favorable pathway (e.g., $O_2$ inhibiting iron reduction or sulfate reduction).
 
 
-<a id="org3c64ffa"></a>
-
-## Structure of `kinetic_constants_slow.py`
+### Structure of `kinetic_constants_slow.py`
 
 Constants are encapsulated in a callable function `get_reaction_constants(pH, phi)` so that pH-dependent speciation and porosity-dependent conversions can be calculated automatically:
 
@@ -296,9 +263,8 @@ def get_reaction_constants(pH, phi):
 ```
 
 
-<a id="org1fecbeb"></a>
 
-# Step 3: Defining Reactions & Limiters (`fes_reactions.py`)
+## Step 3: Defining Reactions & Limiters (`fes_reactions.py`)
 
 The reactions file is where you express your geochemical hypotheses. It contains two main sections:
 
@@ -306,9 +272,8 @@ The reactions file is where you express your geochemical hypotheses. It contains
 2.  `reactions`: The list of stoichiometric equations and their regulatory controls.
 
 
-<a id="org739ad2b"></a>
 
-## Understanding Limiters & Inhibitors
+### Understanding Limiters & Inhibitors
 
 In sediment columns, microbes follow the classic redox ladder (Froelich et al., 1979). To model this mathematically:
 
@@ -334,9 +299,8 @@ limiters = {
 ```
 
 
-<a id="org5336c1e"></a>
 
-## Declaring Chemical Reactions
+### Declaring Chemical Reactions
 
 Reactions are declared as a list of dictionaries with natural chemical formulas. Notice how clean and readable the syntax is:
 
@@ -410,9 +374,8 @@ reactions = [
 ```
 
 
-<a id="org21fe2f4"></a>
 
-# Step 4: The Master Run Script (`run_velde_model.py`)
+## Step 4: The Master Run Script (`run_velde_model_fast.py`)
 
 The driver script is your experiment control panel. It specifies the sediment accumulation rate, bioturbation mixing, domain length, and simulation duration.
 
@@ -480,7 +443,7 @@ if __name__ == "__main__":
 ```
 
 
-## Spatial Grid Configuration & Reaction Zone Resolution
+### Spatial Grid Configuration & Reaction Zone Resolution
 
 Diagenetic models must resolve spatial scales ranging from sub-millimeter oxygen penetration depths to deep sediment columns spanning decimeters to hundreds of meters. A uniform fine grid across a 50-meter column would require millions of cells and slow down calculations unnecessarily.
 
@@ -493,7 +456,7 @@ The grid structure is divided into four seamless stages from the sediment surfac
 3. **Coarsening Section**: Below the reaction zone, cell size expands geometrically by factor $r = 1.05$ per cell.
 4. **Deep Uniform Section**: Once cell size reaches `max_spacing`, the remainder of the domain down to `max_depth` uses uniform large cells.
 
-### 2. The Geochemical Importance of Reaction Zone Resolution
+#### 2. The Geochemical Importance of Reaction Zone Resolution
 Why does grid spacing in the reaction zone matter so much?
 Fast bimolecular redox reactions—such as ferrous iron oxidation ($\text{Fe}^{2+} + \text{O}_2 \to \text{Fe}^{3+}$) or sulfide oxidation—occur across exceedingly narrow interfaces. The physical reaction front width $\delta_{\text{phys}}$ is governed by the balance between molecular diffusion and reaction kinetics:
 $$\delta_{\text{phys}} \sim \sqrt{\frac{D_{\text{eff}}}{k \cdot C_{\text{scale}}}}$$
@@ -504,7 +467,7 @@ If your numerical grid cell size $\Delta z$ is larger than $2 \delta_{\text{phys
 - Reactants diffuse past each other instead of reacting completely at the interface.
 - Apparent reaction rates become smeared over several millimeters to centimeters.
 
-### 3. Automated Coexistence Diagnostic
+#### 3. Automated Coexistence Diagnostic
 MANTIS automatically runs a post-simulation front diagnostic (`check_reactant_coexistence`) at the end of every run. If any reaction front is under-resolved, MANTIS outputs a clear warning:
 ```text
 [WARNING: Numerical Reactant Co-existence Detected]
@@ -525,9 +488,8 @@ model.configure(
 )
 ```
 
-<a id="orgf185086"></a>
 
-# Step 5: Designing Plot Layouts (`plot_layout.py`)
+## Step 5: Designing Plot Layouts (`plot_layout.py`)
 
 Geochemists usually want to see:
 
@@ -538,9 +500,7 @@ Geochemists usually want to see:
 The `plot_layout.py` file gives you complete control over figure layout, colors, and line attributes.
 
 
-<a id="orgaefde21"></a>
-
-## Converting Model Units to Geochemical Units
+### Converting Model Units to Geochemical Units
 
 In the model solver, all concentrations are tracked in volumetric $\text{mmol/L}$. To convert them to $\text{wt}\%$ for your figures, MANTIS provides helper functions:
 
@@ -553,9 +513,7 @@ FeS_wt_percent = solid_conc_to_wt_percent(df.c_FeS, mw=56.0, d=2.6, phi=df.phi)
 ```
 
 
-<a id="orgf5ff558"></a>
-
-## Defining Multi-Panel Profiles
+### Defining Multi-Panel Profiles
 
 In `get_layout(df)`, you return a dictionary defining the figure geometry:
 
@@ -606,19 +564,14 @@ def get_layout(df):
 ```
 
 
-<a id="orge7acd7b"></a>
+## Step 6: Running the Model & Producing Time-Lapse Videos
 
-# Step 6: Running the Model & Producing Time-Lapse Videos
-
-
-<a id="orgee831e4"></a>
-
-## Standard Execution
+### Standard Execution
 
 To run your simulation, simply run the driver script in your terminal:
 
 ```sh
-python run_velde_model.py
+python run_velde_model_fast.py
 ```
 
 During execution, MANTIS outputs progressive milestones indicating physical time reached, current timestep $\Delta t$, and Newton iterations:
@@ -639,27 +592,23 @@ d34S = -23.59 permil
 ```
 
 
-<a id="orgcf4fea3"></a>
-
-## Generating a Time-Lapse Video
+### Generating a Time-Lapse Video
 
 To observe the dynamics as reaction fronts establish, add the `--video` CLI flag followed by the recording interval:
 
 ```sh
-python run_velde_model.py --video "1 year"
+python run_velde_model_fast.py --video "1 year"
 ```
 
 This spawns an asynchronous background video worker that renders each snapshot into an MP4 file (`run_velde_model.mp4`) without slowing down the core simulation solver!
 
-
-<a id="orgf872aa8"></a>
 
 ## Command-Line Options Reference
 
 You can query all options and their configured defaults at any time:
 
 ```sh
-python run_velde_model.py --help
+python run_velde_model_fast.py --help
 ```
 
 Key flags include:
@@ -670,9 +619,7 @@ Key flags include:
 -   `--numerical-jacobian`: Run with finite-difference Jacobians instead of analytical SymPy Jacobians.
 
 
-<a id="orgfeddb58"></a>
-
-# Solver Mechanics & Physical Realism (Geochemist's Alert!)
+## Solver Mechanics & Physical Realism (Geochemist's Alert!)
 
 A critical strength of MANTIS's monolithic implicit Block Newton solver is that it is **unconditionally numerically stable**: unlike classical explicit methods (which blow up if the timestep $\Delta t$ exceeds seconds or hours), MANTIS will **not crash** even when taking timesteps of $\Delta t = 1\text{ year}$ or more.
 
@@ -682,17 +629,13 @@ However, **numerical stability is not the same as physical realism**. Here is wh
 > 
 > If the solver takes very large time steps ($\Delta t = 1\text{ year}$), diffusion carries $\text{HS}^-$ and $\text{O}_2$ across several grid cells within a single time step. While the implicit solver computes a mathematically stable solution, it will **artificially broaden (smear)** the reaction front. In the simulation, sulfide and oxygen might appear to coexist over several centimeters, whereas in nature they react immediately to near-zero levels within millimeters.
 
-
-<a id="org9a13232"></a>
-
-## How to Ensure Physical Realism:
+### How to Ensure Physical Realism:
 
 1.  **Cap $\Delta t_{\text{max}}$**: If you are studying transient front migration or sharp redox boundaries, set `dt_max`"1 month"= or `dt_max`"6 month"= rather than multiple years.
 2.  **Refine the Reaction Zone Grid**: Use MANTIS's `make_grid2` with high resolution (e.g. $\Delta z \le 0.5\text{ mm}$) across the critical depth where the redox front sits.
 3.  **Check Front Coexistence**: Verify that reactants do not unnaturally overlap by running diagnostic checks across your front.
 
 
-<a id="org0cb5c1f"></a>
 
 # Summary & Next Steps
 

@@ -1,19 +1,15 @@
 # MANTIS: A *M*onolithic *A*ssembly of *N*onlinear *T*ransport *I*nteractions *S*olver
 
-**MANTIS** is a high-performance 1D reactive-transport modeling (RTM) framework written in Python, designed to simulate stiff, tightly coupled advection-diffusion-reaction networks.
+**MANTIS** is a high-performance 1D reactive-transport modeling (RTM) framework written in Python, designed to simulate stiff, tightly coupled advection-diffusion-reaction networks, by building a fully coupled monolithic equation system. Mantis stands for   *M*onolithic *A*ssembly of *N*onlinear *T*ransport *I*nteraction*S*
 
----
 
-## What is MANTIS?
-
-Reactive-transport systems in natural environments—such as marine sediments, groundwater aquifers, and geochemical reactors—involve simultaneous transport (advection, molecular diffusion, bio-irrigation, and bioturbation) coupled with complex networks of nonlinear chemical, mineral, and biological reactions.
 
 MANTIS provides:
-- **Declarative Geochemical Model Definition**: Define chemical species, phases, reaction stoichiometries, and kinetic limiters (Monod, inhibition, threshold laws) in intuitive, human-readable Python configuration files.
+- **Declarative Geochemical Model Definition**: Define chemical species, phases, reaction stoichiometries, and kinetic limiters (Monod, inhibition, threshold laws), and isotope effects using  intuitive, human-readable Python configuration files.
 - **Automated Symbolic Jacobian Generation**: Automatically parses reaction networks and compiles analytical chemical Jacobians using symbolic computer algebra (`SymPy`), eliminating error-prone manual differentiation.
 - **Monolithic Block Newton-Raphson Solver**: Solves all chemical species and transport equations simultaneously in a coupled block-tridiagonal system using a Numba-accelerated Block Thomas algorithm.
 - **Adaptive Time Stepping**: Features PID-controlled adaptive time stepping with automatic step rejection and convergence recovery.
-- **Unified Declarative Interface**: Configure and run simulations through `DiageneticModel`, complete with automatic CLI argument handling, checkpointing, publication-ready summary plots, and asynchronous time-lapse video generation.
+- **Unified Declarative Interface**: Configure and run simulations through `DiageneticModel`, complete with automatic CLI argument handling, and an integrated plotting system that supports asynchronous time-lapse video generation.
 
 ---
 
@@ -58,7 +54,7 @@ While MANTIS provides robust and unconditionally stable solutions for stiff reac
 2. **Time-Invariant Porosity**:
    - The porosity profile $\phi(z)$ is stationary in time (steady-state compaction). Transient sediment compaction or compaction-driven dynamic fluid expulsion over time is not currently modeled.
 3. **Time-Invariant Temperature**:
-   - The temperature profile $T(z)$ is steady-state. Dynamic thermal evolution and time-dependent diffusion coefficients or rate constants driven by non-isothermal thermal transients are not currently supported.
+   - The temperature profile of $T(z)$ is steady-state. Dynamic thermal evolution and time-dependent diffusion coefficients or rate constants driven by non-isothermal thermal transients are not currently supported.
 
 ---
 
@@ -77,47 +73,7 @@ Dependencies include `numpy`, `pandas`, `matplotlib`, `numba`, `sympy`, `chempy`
 ---
 
 ## Quick Start Example
-
-A typical simulation directory contains declarative configuration files defining species, reactions, rate constants, and plot layouts:
-
-```python
-from mantis import DiageneticModel
-
-# 1. Initialize the model (auto-detects species.py, reactions, constants in the directory)
-model = DiageneticModel(
-    reactions="fes_reactions.py",
-    constants="kinetic_constants_slow.py",
-    layout="plot_layout.py",
-    experiment="marine_diagenesis",
-)
-
-# 2. Configure environmental and grid parameters
-model.configure(
-    max_depth="0.5 m",
-    t_end="2 kyr",
-    dt_init="1 day",
-    dt_max="1 year",
-    w="0.2 cm/yr",
-    phi=0.8,
-    bioturbation={
-        "BT0": "4 cm^2/year",
-        "depth": "6 cm",
-        "attenuation": "2 cm",
-    },
-)
-
-# 3. Enable CLI flag overrides (--video, --solver-tol, --t-end, etc.)
-model.parse_cli_args()
-
-# 4. Run the simulation
-result = model.run()
-
-# 5. Export results and summary plots
-df, csv_path = result.save_csv()
-result.plot_summary()
-```
-
----
+A quick-start tutorial is available in the `./docs` folder
 
 ## Running Tests
 
