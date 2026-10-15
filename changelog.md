@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-15
+
+### Added
+
+- **Generalized Isotope Modeling & Standards Framework**:
+  - Dynamically handle all isotope companion species across `diff_lib.py` and `live_plot_lib.py` instead of relying on hardcoded mappings.
+  - Added support for explicit isotope reference standards (e.g., `VCDT` for sulfur) with custom standard ratios and metadata-defined `delta_name`.
+  - Added support for species without explicit stoichiometry (defaulting to 1.0) and maintained backwards compatibility for legacy `d_<base>` column names alongside `d34S_<species>`.
+  - Updated isotope unit representations from per mil (`permil` / `‰`) to milli Urey (`mUr`) per IUPAC conventions across documentation, examples, and plot exports.
+ 
+- **Equation System Generation & Dynamic Limiters**:
+  - Dynamic extraction of Monod half-saturation constants from rate expressions with phase-aware (solid vs. fluid phase) scaling based on sediment porosity.
+  - Implemented dynamic limiter inclusion based on actual reactant and inhibition usage, eliminating unused terms and redundant code in generated equation scripts.
+  - Added `force_regen` and `rebuild_equations` options in `generate_equation_system` and added the `--force-regen` CLI argument to bypass cached equations and rebuild.
+  - Added automatic equation regeneration checks comparing file modification timestamps of generator and reaction scripts.
+- **Model Configuration & Video Controls**:
+  - Added strict pH validation during `DiageneticModel` initialization with descriptive error guidance.
+  - Enhanced `configure()` with generic Pint-based unit conversions for geometric, environmental, transport, and grid parameters.
+- **CI/CD & Documentation**:
+  - Added Python 3.14 to GitHub Actions test matrix across Linux environments.
+  - Added status, PyPI version, Python versions (3.12–3.14), and AGPL license badges to `README.md`.
+  - Expanded tutorial documentation (`docs/tutorial.md`) with isotope delta boundary condition examples, updated geochemical constants, and equation regeneration options.
+  - Added comprehensive test coverage in `tests/test_diagenetic_model.py` for isotope standards, delta columns, and missing file diagnostics.
+
+### Changed
+
+- **Examples**:
+  - Streamlined `examples/velde_et_al_2016/run_velde_fast.py` by removing unnecessary manual time stepping parameters (`dt_init`, `dt_min`, `dt_tolerance`).
+  - Simplified limiter calculation logic in `velde_et_al_2016` by consolidating phase scaling into a unified block.
+- **Plotting**:
+  - Refactored `plot_data_new.py` to dynamically detect and plot isotope delta columns.
+
+### Removed
+
+- Removed obsolete `docs/tutorial.org` file.
+- Removed deprecated default parameter assignments for `Fe2_diss`, `Fe2_sorb`, `hs_frac`, and `h2s_frac`.
+
 ## [0.1.2] - 2026-10-12
 
 ### Added

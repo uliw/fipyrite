@@ -1,5 +1,10 @@
 # MANTIS: A *M*onolithic *A*ssembly of *N*onlinear *T*ransport *I*nteractions *S*olver
 
+[![Build Status](https://github.com/uliw/mantis/actions/workflows/tests.yml/badge.svg)](https://github.com/uliw/mantis/actions/workflows/tests.yml)
+[![PyPI Version](https://img.shields.io/pypi/v/mantis-rtm.svg)](https://pypi.org/project/mantis-rtm/)
+[![Python Versions](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://pypi.org/project/mantis-rtm/)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL_3.0--or--later-blue.svg)](https://github.com/uliw/mantis/blob/main/LICENSE)
+
 **MANTIS** is a high-performance 1D reactive-transport modeling (RTM) framework written in Python, designed to simulate stiff, tightly coupled advection-diffusion-reaction networks, by building a fully coupled monolithic equation system. Mantis stands for   *M*onolithic *A*ssembly of *N*onlinear *T*ransport *I*nteraction*S*
 
 
