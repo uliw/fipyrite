@@ -32,6 +32,19 @@ Each key in the `species` dictionary represents a chemical species name:
 import numpy as np
 
 
+# -----------------------------------------------------------------------------
+# Isotope Reference Standards
+# -----------------------------------------------------------------------------
+isotope_standards: dict = {
+    "S": {
+        "standard": "VCDT",
+        "ratio": 0.044162589,  # 34S / 32S
+        "symbol": "d34S",
+        "unit": "permil",
+    },
+}
+
+
 """
 Most species are covered by the diff_coeff function with the m0, m1 parameter listed in
 Boudreau 1996. If no parameters are availble, please provide any custom functions here.
@@ -116,6 +129,14 @@ species = {
         "formula": "HS",
         "isotope_of": "HS",
     },
+    "H2S": {
+        "phase": "liquid",
+        "include": False,
+        "formula": "H2S",
+        "equilibrium_of": "TS2",
+        "fraction": "Hplus / (Hplus + Ka1)",
+        "constants": {"pKa1": 7.0},
+    },
 
     # -------------------------------------------------------------------------
     # Mixed / Lumped Species (Porewater + Sorbed Solid)
@@ -191,6 +212,8 @@ species = {
         "diffusion": None,
         "bc": {"top": 0.0, "type": "particulate"},
         "isotope": "FeS2_32",
+        "stoichiometry": 2.0,
+        "isotope_standard": "S",
     },
     "FeS2_32": {
         "phase": "solid",
