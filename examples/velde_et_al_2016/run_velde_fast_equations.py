@@ -25,16 +25,13 @@ def get_limiters(c, mp):
         return _external_get_limiters(c, mp)
     phi = np.asarray(mp.phi.value if hasattr(mp.phi, "value") else mp.phi)
     solid_phi = 1.0 - phi
-    # Dynamically extract half-saturation constants from mp (liquid scaled by phi, solid by solid_phi)
-    # Liquid phase limiters:
-    K_O2 = getattr(mp, "K_O2", 0.0) / phi
-    K_O2_TS2 = getattr(mp, "K_O2_TS2", 0.0) / phi
-    K_TS2 = getattr(mp, "K_TS2", 0.0) / phi
-    K_SO4 = getattr(mp, "K_SO4", 0.0) / phi
-    # Solid phase limiters:
+    limiters = {}
+    # Dynamically extract half-saturation constants (liquid scaled by phi, solid by 1-phi)
     K_Fe3 = getattr(mp, "K_Fe3", 0.0) / solid_phi
     K_Fe3_diss_red = getattr(mp, "K_Fe3_diss_red", 0.0) / solid_phi
-    limiters = {}
+    K_O2 = getattr(mp, "K_O2", 0.0) / phi
+    K_O2_TS2 = getattr(mp, "K_O2_TS2", 0.0) / phi
+    K_SO4 = getattr(mp, "K_SO4", 0.0) / phi
     _l_O2 = 1.0 / (c.O2 + K_O2)
     limiters["O2_implicit"] = _l_O2
     limiters["O2_inhibit"] = (K_O2) * _l_O2
