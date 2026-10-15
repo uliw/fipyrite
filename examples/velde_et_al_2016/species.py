@@ -204,7 +204,7 @@ species = {
         "include": True,
         "formula": "S",
         "diffusion": None,
-        "bc": {"top": 0.0, "type": "particulate"},
+        "bc": {"top": 0.0, "type": "particulate", "delta": 8.0},
         "isotope": "S0_32",
     },
     "S0_32": {

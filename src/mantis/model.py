@@ -261,66 +261,32 @@ class DiageneticModel:
         return (Path.cwd() / p).resolve()
 
     def _init_defaults(self) -> None:
-        """Initializes default physical, geometric, and numerical solver parameters."""
+        """Initializes default numerical solver, video output, and experiment metadata parameters."""
         Q_ = self.Q_
         self.p_dict.update({
+            # Experiment metadata
             "experiment": self.experiment,
             "plot_name": self.experiment,
             "state_data": None,
             "layout_file": str(self.layout_file),
+            "start_time": 0,
+
+            # Video recording options
             "video_dt": None,
             "video_dpi": 120,
             "video_queue_size": 100,
             "video_resume_threshold": 50,
             "video_workers": None,
-            "start_time": 0,
-            # Geometry
-            "max_depth": 2.0,  # meters
-            "initial_spacing": 0.0001,
-            "reaction_zone_spacing": 0.0001,
-            "max_spacing": 0.1,
-            "reaction_zone": (0.0, 0.1),
-            "display_length": 2.0,
-            # Environmental defaults
-            "temp": [10.0, 10.1],
-            "w": Q_("0.2 cm/yr").to("m/s").magnitude,
-            "advection": 0.0,
-            "phi": 0.8,
-            "POC_O2_ratio": 1.27,
-            # Monod defaults (bulk or phase corrected)
-            "K_O2": Q_("0.001 umol/cm^3").to("mol/m^3").magnitude,
-            "K_O2_TS2": Q_("0.001 umol/cm^3").to("mol/m^3").magnitude,
-            "K_TS2": Q_("0.1 umol/cm^3").to("mol/m^3").magnitude,
-            "K_SO4": Q_("0.9 umol/cm^3").to("mol/m^3").magnitude,
-            "K_Fe3_diss_red": Q_("10.4 umol/cm^3").to("mol/m^3").magnitude,
-            "K_Fe3": 1e-3,
-            # Benthic activity (bioirrigation explicitly disabled by default)
-            "BT0": 0.0,
-            "BT_depth": Q_("7.6 cm").to("meter").magnitude,
-            "BT_attenuation": Q_("2 cm").to("meter").magnitude,
-            "BI0": 0.0,  # explicitly 0.0
-            "BI_depth": 0.0,
-            # Isotopes
-            "isotopes": True,
-            "SO4_d": 21.0,
-            "S0_d": 8.0,
-            "msr_alpha": 1.07,
-            "TS2_O2_alpha": 0.995,
-            "S0_O2_alpha": 1.0,
-            "dispro_hs_alpha": 0.993,
-            "dispro_SO4_hs_split": 3.0,
-            "h2s_hs_alpha": 0.99991542,
-            "VCDT": 0.044162589,
-            "K_epsilon_msr": 0.2,
-            "K_epsilon_TS2_O2": 0.01,
+
             # Solver parameters
             "solver": "monolithic",
             "t_end": Q_("1 kyr").to("seconds").magnitude,
             "dt_min": Q_("1 minute").to("seconds").magnitude,
-            "dt_init": Q_("1 month").to("seconds").magnitude,
+            "dt_init": Q_("1 day").to("seconds").magnitude,
             "dt_max": Q_("1 year").to("seconds").magnitude,
             "tolerance": 1e-12,
-            "dt_tolerance": 1e-12,
+            "dt_tolerance": 1e-5,
+
             # Monolithic Newton Settings
             "max_newton_iters": 8,
             "newton_tol": 1e-3,
@@ -333,81 +299,98 @@ class DiageneticModel:
     def configure(self, **kwargs) -> DiageneticModel:
         """Sets or overrides model configuration parameters with automatic unit handling.
 
-        Supported parameters include:
-        - max_depth: e.g. "10 m" or 10.0
-        - t_end: e.g. "10 kyr" or seconds
-        - dt_max: e.g. "1 year"
-        - dt_init: e.g. "1 day"
-        - dt_min: e.g. "1 second"
-        - w: sedimentation rate, e.g. "0.2 cm/yr"
-        - phi: sediment porosity (float)
-        - pH: (float) will update Hplus boundary condition
-        - isotopes: bool
-        - bioturbation: dict with 'BT0', 'depth', 'attenuation'
-        - bioirrigation: dict with 'BI0', 'depth' (defaults to 0.0)
-        - bc_overrides: dict mapping species names to concentration/flux overrides
+        Any parameter passed with units (as a string or Pint Quantity) is automatically
+        detected and converted to standard SI simulation units based on its physical dimensionality:
+        - [time] -> seconds (e.g. t_end='2 kyr', dt_max='1 year', dt_min='1 second')
+        - [length] -> meters (e.g. max_depth='0.5 m', initial_spacing='0.01 mm')
+        - [length] / [time] -> m/s (e.g. w='0.2 cm/yr')
+        - [length]^2 / [time] -> m^2/s (e.g. BT0='4 cm^2/year')
+        - 1 / [time] -> 1/s (e.g. BI0='0.1 /year')
+        - [substance] / [length]^3 -> mol/m^3 (e.g. concentration='0.001 umol/cm^3')
+        - [substance] / ([length]^2 * [time]) -> mol/(m^2*s) (e.g. flux='1.2 mol/(m^2*yr)')
+
+        Nested structures (dicts, lists, tuples) are handled recursively.
         """
         Q_ = self.Q_
 
-        def _to_sec(val: Any) -> float:
+        def _convert_value(val: Any) -> Any:
+            if isinstance(val, (list, tuple)):
+                converted = [_convert_value(item) for item in val]
+                return tuple(converted) if isinstance(val, tuple) else converted
+            if isinstance(val, dict):
+                return {k: _convert_value(v) for k, v in val.items()}
             if isinstance(val, str):
-                return Q_(val).to("seconds").magnitude
-            return float(val)
-
-        def _to_m(val: Any) -> float:
-            if isinstance(val, str):
-                return Q_(val).to("meter").magnitude
-            return float(val)
-
-        def _to_vel(val: Any) -> float:
-            if isinstance(val, str):
-                return Q_(val).to("m/s").magnitude
-            return float(val)
+                try:
+                    q = Q_(val)
+                    if hasattr(q, "dimensionality"):
+                        dim = q.dimensionality
+                        if dim == Q_("1 second").dimensionality:
+                            return q.to("seconds").magnitude
+                        elif dim == Q_("1 meter").dimensionality:
+                            return q.to("meter").magnitude
+                        elif dim == Q_("1 m/s").dimensionality:
+                            return q.to("m/s").magnitude
+                        elif dim == Q_("1 m^2/s").dimensionality:
+                            return q.to("m^2/second").magnitude
+                        elif dim == Q_("1 / second").dimensionality:
+                            return q.to("1/second").magnitude
+                        elif dim == Q_("1 mol/m^3").dimensionality:
+                            return q.to("mol/m^3").magnitude
+                        elif dim == Q_("1 mol/(m^2 * second)").dimensionality:
+                            return q.to("mol/(m^2 * second)").magnitude
+                        elif q.dimensionless and not isinstance(q.magnitude, str):
+                            return q.magnitude
+                except Exception:
+                    pass
+            elif hasattr(val, "dimensionality"):
+                dim = val.dimensionality
+                if dim == Q_("1 second").dimensionality:
+                    return val.to("seconds").magnitude
+                elif dim == Q_("1 meter").dimensionality:
+                    return val.to("meter").magnitude
+                elif dim == Q_("1 m/s").dimensionality:
+                    return val.to("m/s").magnitude
+                elif dim == Q_("1 m^2/s").dimensionality:
+                    return val.to("m^2/second").magnitude
+                elif dim == Q_("1 / second").dimensionality:
+                    return val.to("1/second").magnitude
+                elif dim == Q_("1 mol/m^3").dimensionality:
+                    return val.to("mol/m^3").magnitude
+                elif dim == Q_("1 mol/(m^2 * second)").dimensionality:
+                    return val.to("mol/(m^2 * second)").magnitude
+                elif val.dimensionless:
+                    return val.to_base_units().magnitude
+            return val
 
         for key, val in kwargs.items():
-            if key == "max_depth":
-                self.p_dict["max_depth"] = _to_m(val)
-            elif key == "display_length":
-                self.p_dict["display_length"] = _to_m(val)
-            elif key in ("initial_spacing", "reaction_zone_spacing", "max_spacing"):
-                self.p_dict[key] = _to_m(val)
-            elif key == "reaction_zone" and isinstance(val, (tuple, list)):
-                self.p_dict["reaction_zone"] = (_to_m(val[0]), _to_m(val[1]))
-            elif key == "t_end":
-                self.p_dict["t_end"] = _to_sec(val)
-            elif key == "dt_max":
-                self.p_dict["dt_max"] = _to_sec(val)
-            elif key == "dt_init":
-                self.p_dict["dt_init"] = _to_sec(val)
-            elif key == "dt_min":
-                self.p_dict["dt_min"] = _to_sec(val)
-            elif key == "w":
-                self.p_dict["w"] = _to_vel(val)
-            elif key == "bioturbation" and isinstance(val, dict):
-                if "BT0" in val:
-                    b0 = val["BT0"]
-                    self.p_dict["BT0"] = Q_(b0).to("m^2/second").magnitude if isinstance(b0, str) else float(b0)
-                if "depth" in val:
-                    self.p_dict["BT_depth"] = _to_m(val["depth"])
-                if "attenuation" in val:
-                    self.p_dict["BT_attenuation"] = _to_m(val["attenuation"])
-            elif key == "bioirrigation" and isinstance(val, dict):
-                if "BI0" in val:
-                    b0 = val["BI0"]
-                    self.p_dict["BI0"] = Q_(b0).to("1/second").magnitude if isinstance(b0, str) else float(b0)
-                if "depth" in val:
-                    self.p_dict["BI_depth"] = _to_m(val["depth"])
-            elif key == "video" or key == "video_dt":
-                self.p_dict["video_dt"] = val
+            if key in ("video", "video_dt"):
+                self.p_dict["video_dt"] = None if str(val).lower() in ("none", "null", "false") else val
             elif key == "pH":
                 self.p_dict["pH"] = float(val)
             elif key in ("steady_state_tolerance", "dt_tolerance"):
-                self.p_dict["steady_state_tolerance"] = float(val)
-                self.p_dict["dt_tolerance"] = float(val)
+                f_val = float(val)
+                self.p_dict["steady_state_tolerance"] = f_val
+                self.p_dict["dt_tolerance"] = f_val
             elif key == "check_reactant_coexistence":
                 self.p_dict["check_reactant_coexistence"] = bool(val)
+            elif key == "bioturbation" and isinstance(val, dict):
+                c_val = _convert_value(val)
+                if "BT0" in c_val:
+                    self.p_dict["BT0"] = float(c_val["BT0"])
+                if "depth" in c_val:
+                    self.p_dict["BT_depth"] = float(c_val["depth"])
+                if "attenuation" in c_val:
+                    self.p_dict["BT_attenuation"] = float(c_val["attenuation"])
+                self.p_dict["bioturbation"] = c_val
+            elif key == "bioirrigation" and isinstance(val, dict):
+                c_val = _convert_value(val)
+                if "BI0" in c_val:
+                    self.p_dict["BI0"] = float(c_val["BI0"])
+                if "depth" in c_val:
+                    self.p_dict["BI_depth"] = float(c_val["depth"])
+                self.p_dict["bioirrigation"] = c_val
             else:
-                self.p_dict[key] = val
+                self.p_dict[key] = _convert_value(val)
 
         return self
 
@@ -431,6 +414,11 @@ class DiageneticModel:
         cur_max_depth = self.p_dict.get("max_depth", "None")
         cur_disp_len = self.p_dict.get("display_length", "None")
 
+        cur_dt_tol = self.p_dict.get("dt_tolerance", 1e-5)
+        cur_vqueue = self.p_dict.get("video_queue_size", 100)
+        cur_vresume = self.p_dict.get("video_resume_threshold", 50)
+        cur_vworkers = self.p_dict.get("video_workers", None)
+
         solver_section = [
             ("--solver <backend>", cur_solver, "Backend solver choice ('monolithic' or 'coupled')"),
             ("--solver-tol <float>", cur_tol, "Newton convergence tolerance (e.g. 1e-3)"),
@@ -439,11 +427,16 @@ class DiageneticModel:
             ("--newton-norm <choice>", cur_norm, "Residual norm formulation ('linf' or 'wrms')"),
             ("--newton-target-optimal <int>", cur_opt_iters, "Target Newton iterations for timestep expansion"),
             ("--newton-max-acceptable <int>", cur_max_acc_iters, "Max acceptable iterations before timestep reduction"),
+            ("--dt-tolerance <float>", cur_dt_tol, "Adaptive timestep convergence tolerance (e.g. 1e-5)"),
+            ("--force-regen", False, "Force regeneration of equation system and analytical Jacobian"),
         ]
 
         video_section = [
             ("--video <interval>", cur_video, "Live video recording frame interval (e.g. '10 year', 'none')"),
             ("--video-dpi <int>", cur_dpi, "Resolution (DPI) of recorded video frames"),
+            ("--video-queue-size <int>", cur_vqueue, "Maximum video frame render queue size"),
+            ("--video-resume-threshold <int>", cur_vresume, "Video frame resume queue threshold"),
+            ("--video-workers <int>", cur_vworkers, "Dedicated background worker count for video rendering"),
         ]
 
         run_section = [
@@ -513,6 +506,18 @@ class DiageneticModel:
             metavar="ITERS",
             help=f"Max iterations before timestep reduction (default: {cur_max_acc_iters})",
         )
+        parser.add_argument(
+            "--dt-tolerance",
+            type=float,
+            metavar="TOL",
+            help=f"Adaptive timestep tolerance (default: {cur_dt_tol})",
+        )
+        parser.add_argument(
+            "--force-regen",
+            "--rebuild-equations",
+            action="store_true",
+            help="Force regeneration of equations and analytical Jacobian",
+        )
 
         # Video options
         parser.add_argument(
@@ -528,6 +533,24 @@ class DiageneticModel:
             const="__SHOW__",
             metavar="DPI",
             help=f"Video DPI resolution (default: {cur_dpi})",
+        )
+        parser.add_argument(
+            "--video-queue-size",
+            type=int,
+            metavar="SIZE",
+            help=f"Max video queue size (default: {cur_vqueue})",
+        )
+        parser.add_argument(
+            "--video-resume-threshold",
+            type=int,
+            metavar="SIZE",
+            help=f"Video queue resume threshold (default: {cur_vresume})",
+        )
+        parser.add_argument(
+            "--video-workers",
+            type=int,
+            metavar="COUNT",
+            help="Worker count for video encoding",
         )
 
         # Run / Domain options
@@ -610,12 +633,22 @@ class DiageneticModel:
             self.p_dict["newton_target_optimal"] = parsed.newton_target_optimal
         if parsed.newton_max_acceptable is not None:
             self.p_dict["newton_max_acceptable"] = parsed.newton_max_acceptable
+        if parsed.dt_tolerance is not None:
+            self.configure(dt_tolerance=parsed.dt_tolerance)
+        if parsed.force_regen:
+            self.p_dict["force_regen"] = True
 
         # Apply video overrides
         if parsed.video is not None:
             self.p_dict["video_dt"] = None if parsed.video.lower() in ("none", "null", "false") else parsed.video
         if parsed.video_dpi is not None:
             self.p_dict["video_dpi"] = int(parsed.video_dpi)
+        if parsed.video_queue_size is not None:
+            self.p_dict["video_queue_size"] = int(parsed.video_queue_size)
+        if parsed.video_resume_threshold is not None:
+            self.p_dict["video_resume_threshold"] = int(parsed.video_resume_threshold)
+        if parsed.video_workers is not None:
+            self.p_dict["video_workers"] = int(parsed.video_workers)
 
         # Apply run / domain overrides
         if parsed.t_end is not None:
@@ -651,6 +684,44 @@ class DiageneticModel:
         self.mp.update(self.p_dict)
         self.mp._caller_dir = str(self.base_dir)
 
+        # Fallback defaults for geometry if not specified by user configuration
+        if not hasattr(self.mp, "max_depth"):
+            self.mp.max_depth = 2.0
+        if not hasattr(self.mp, "display_length"):
+            self.mp.display_length = self.mp.max_depth
+        if not hasattr(self.mp, "initial_spacing"):
+            self.mp.initial_spacing = 0.0001
+        if not hasattr(self.mp, "reaction_zone_spacing"):
+            self.mp.reaction_zone_spacing = 0.0001
+        if not hasattr(self.mp, "max_spacing"):
+            self.mp.max_spacing = 0.1
+        if not hasattr(self.mp, "reaction_zone"):
+            self.mp.reaction_zone = (0.0, 0.1)
+
+        # Fallback defaults for environmental and transport parameters
+        if not hasattr(self.mp, "temp"):
+            self.mp.temp = [10.0, 10.1]
+        if not hasattr(self.mp, "w"):
+            self.mp.w = self.Q_("0.2 cm/yr").to("m/s").magnitude
+        if not hasattr(self.mp, "advection"):
+            self.mp.advection = 0.0
+        if not hasattr(self.mp, "phi"):
+            self.mp.phi = 0.8
+        if not hasattr(self.mp, "BT0"):
+            self.mp.BT0 = 0.0
+        if not hasattr(self.mp, "BT_depth"):
+            self.mp.BT_depth = self.Q_("7.6 cm").to("meter").magnitude
+        if not hasattr(self.mp, "BT_attenuation"):
+            self.mp.BT_attenuation = self.Q_("2 cm").to("meter").magnitude
+        if not hasattr(self.mp, "BI0"):
+            self.mp.BI0 = 0.0
+        if not hasattr(self.mp, "BI_depth"):
+            self.mp.BI_depth = 0.0
+        if not hasattr(self.mp, "isotopes"):
+            self.mp.isotopes = True
+        if not hasattr(self.mp, "VCDT"):
+            self.mp.VCDT = 0.044162589
+
         # 1. Parse species definitions
         species_defs = self._load_species_definitions()
 
@@ -678,6 +749,20 @@ class DiageneticModel:
         self.mp.reactions_module = eq_mod
         if hasattr(eq_mod, "get_limiters"):
             self.mp.get_limiters = eq_mod.get_limiters
+
+        # Extract reaction_parameters or fractionation_factors from reactions module or file
+        rxn_params = getattr(eq_mod, "reaction_parameters", None) or getattr(eq_mod, "fractionation_factors", None)
+        if rxn_params is None and hasattr(self, "reactions_file") and self.reactions_file.exists():
+            spec_rxn = importlib.util.spec_from_file_location("rxn_param_mod", self.reactions_file)
+            if spec_rxn and spec_rxn.loader:
+                mod_rxn = importlib.util.module_from_spec(spec_rxn)
+                spec_rxn.loader.exec_module(mod_rxn)
+                rxn_params = getattr(mod_rxn, "reaction_parameters", None) or getattr(mod_rxn, "fractionation_factors", None)
+
+        if isinstance(rxn_params, dict):
+            for rp_k, rp_v in rxn_params.items():
+                if not hasattr(self.mp, rp_k):
+                    setattr(self.mp, rp_k, rp_v)
 
         # 4. Load reaction constants
         spec_rc = importlib.util.spec_from_file_location("rc_mod", self.constants_file)
@@ -708,6 +793,12 @@ class DiageneticModel:
         k = data_container()
         _k1, k = get_rc_fn(self.mp.pH, self.mp.phi, k_values=k)
         self.mp.k = k
+
+        # Propagate Monod half-saturation constants (K_*) from k to self.mp if not already configured
+        k_items = k.items() if hasattr(k, "items") else k.__dict__.items()
+        for k_name, k_val in k_items:
+            if k_name.startswith("K_") and not hasattr(self.mp, k_name):
+                setattr(self.mp, k_name, k_val)
 
         # 7. Species lists & phase classification
         species_transport: List[str] = []
