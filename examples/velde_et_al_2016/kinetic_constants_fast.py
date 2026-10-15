@@ -84,6 +84,12 @@ def get_reaction_constants(
         ],
         # S0 disproportionation rate (first-order in S0)
         "S0_dispro": [50, "1/year", "1/second"],
+        # Monod half-saturation & inhibition thresholds
+        "K_O2": [0.001, "umol/cm^3", "mol/m^3"],
+        "K_O2_TS2": [0.001, "umol/cm^3", "mol/m^3"],
+        "K_SO4": [0.9, "umol/cm^3", "mol/m^3"],
+        "K_Fe3_diss_red": [10.4, "umol/cm^3", "mol/m^3"],
+        "K_Fe3": [1e-3, "dimensionless", "dimensionless"],
     }
 
     for k, v in velde.items():

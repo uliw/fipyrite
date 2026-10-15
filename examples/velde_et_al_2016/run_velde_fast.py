@@ -34,12 +34,15 @@ if __name__ == "__main__":
         display_length="0.5 m",
         t_end="2 kyr",
         dt_max="1 year",
-        dt_tolerance = 1e-5, # steady state criterium
         dt_init="1 day",
         dt_min="1 second",
+        dt_tolerance=1e-5,
+        temp=[10.0, 10.1],
         w="0.2 cm/yr",
+        advection=0.0,
         phi=0.8,
         isotopes=True,
+        VCDT=0.044162589,
         bioturbation={
             "BT0": "4 cm^2/year",
             "depth": "6 cm",
@@ -51,6 +54,8 @@ if __name__ == "__main__":
         },
         reaction_zone=("0.1 cm", "1.0 cm"), # Critical depth window of sharp redox fronts
         reaction_zone_spacing="0.01 mm",    # Dense, uniform spacing in the reaction zone
+        initial_spacing="0.1 mm",
+        max_spacing="10 cm",
     )
 
     # Allow CLI argument overrides (e.g. --video, --solver-tol)

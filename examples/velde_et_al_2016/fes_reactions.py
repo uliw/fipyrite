@@ -23,12 +23,32 @@ Template Structure & Design:
    - isotope_fractionation: (Optional) Isotope fractionation factor and limiter.
 """
 
+
+# -------------------------------------------------------------------------
+# Reaction Parameters & Isotope Fractionation Factors
+# -------------------------------------------------------------------------
+reaction_parameters = {
+    # Isotope fractionation factors
+    "msr_alpha": 1.07,
+    "TS2_O2_alpha": 0.995,
+    "S0_O2_alpha": 1.0,
+    "dispro_hs_alpha": 0.993,
+    "dispro_SO4_hs_split": 3.0,
+    "h2s_hs_alpha": 0.99991542,
+    # Primary respiration stoichiometry
+    "POC_O2_ratio": 1.27,
+    # Transition factors for isotope fractionation limiters
+    "K_epsilon_msr": 0.2,
+    "K_epsilon_TS2_O2": 0.01,
+}
+fractionation_factors = reaction_parameters
+
+
 limiters = {
     # Base implicit limiters: L_imp = 1.0 / (C + K)
     # The parser automatically derives explicit (C * L_imp) and inhibition (K * L_imp = 1 - C * L_imp)
     "O2": "1.0 / (c.O2 + K_O2)",
     "O2_TS2": "1.0 / (c.O2 + mp.K_O2_TS2)",
-    "TS2": "1.0 / (c.TS2 + K_TS2)",
     "SO4": "1.0 / (c.SO4 + K_SO4)",
     "Fe3": "1.0 / (np.maximum(c.Fe3, 0.0) + K_Fe3)",
     "Fe3_diss_red": "1.0 / (np.maximum(c.Fe3, 0.0) + K_Fe3_diss_red)",
@@ -137,4 +157,3 @@ reactions = [
         "isotope_species": {"TS2": "TS2_32", "FeS": "FeS_32", "HS": "HS_32"},
     },
 ]
-

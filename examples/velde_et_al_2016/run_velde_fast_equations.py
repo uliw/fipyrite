@@ -28,60 +28,30 @@ def get_limiters(c, mp):
     # Dynamically extract half-saturation constants from mp (liquid scaled by phi, solid by solid_phi)
     # Liquid phase limiters:
     K_O2 = getattr(mp, "K_O2", 0.0) / phi
+    K_O2_TS2 = getattr(mp, "K_O2_TS2", 0.0) / phi
     K_TS2 = getattr(mp, "K_TS2", 0.0) / phi
     K_SO4 = getattr(mp, "K_SO4", 0.0) / phi
     # Solid phase limiters:
     K_Fe3 = getattr(mp, "K_Fe3", 0.0) / solid_phi
     K_Fe3_diss_red = getattr(mp, "K_Fe3_diss_red", 0.0) / solid_phi
     limiters = {}
-    limiters["O2"] = 1.0 / (c.O2 + K_O2)
-    limiters["O2_implicit"] = limiters["O2"]
-    limiters["O2_explicit"] = (c.O2) * limiters["O2"]
-    limiters["O2_inhibit"] = (K_O2) * limiters["O2"]
-    limiters["O2_inhib"] = limiters["O2_inhibit"]
-    limiters["O2_TS2"] = 1.0 / (c.O2 + mp.K_O2_TS2)
-    limiters["O2_TS2_implicit"] = limiters["O2_TS2"]
-    limiters["O2_implicit_TS2"] = limiters["O2_TS2"]
-    limiters["O2_TS2_implicit"] = limiters["O2_TS2"]
-    limiters["O2_TS2_explicit"] = (c.O2) * limiters["O2_TS2"]
-    limiters["O2_TS2_inhibit"] = (mp.K_O2_TS2) * limiters["O2_TS2"]
-    limiters["O2_TS2_inhib"] = limiters["O2_TS2_inhibit"]
-    limiters["O2_explicit_TS2"] = limiters["O2_TS2_explicit"]
-    limiters["O2_inhibit_TS2"] = limiters["O2_TS2_inhibit"]
-    limiters["O2_inhib_TS2"] = limiters["O2_TS2_inhibit"]
-    limiters["TS2"] = 1.0 / (c.TS2 + K_TS2)
-    limiters["TS2_implicit"] = limiters["TS2"]
-    limiters["TS2_explicit"] = (c.TS2) * limiters["TS2"]
-    limiters["TS2_inhibit"] = (K_TS2) * limiters["TS2"]
-    limiters["TS2_inhib"] = limiters["TS2_inhibit"]
-    limiters["SO4"] = 1.0 / (c.SO4 + K_SO4)
-    limiters["SO4_implicit"] = limiters["SO4"]
-    limiters["SO4_explicit"] = (c.SO4) * limiters["SO4"]
-    limiters["SO4_inhibit"] = (K_SO4) * limiters["SO4"]
-    limiters["SO4_inhib"] = limiters["SO4_inhibit"]
-    limiters["Fe3"] = 1.0 / (np.maximum(c.Fe3, 0.0) + K_Fe3)
-    limiters["Fe3_implicit"] = limiters["Fe3"]
-    limiters["Fe3_explicit"] = (np.maximum(c.Fe3, 0.0)) * limiters["Fe3"]
-    limiters["Fe3_inhibit"] = (K_Fe3) * limiters["Fe3"]
-    limiters["Fe3_inhib"] = limiters["Fe3_inhibit"]
-    limiters["Fe3_diss_red"] = 1.0 / (np.maximum(c.Fe3, 0.0) + K_Fe3_diss_red)
-    limiters["Fe3_diss_red_implicit"] = limiters["Fe3_diss_red"]
-    limiters["Fe3_implicit_diss_red"] = limiters["Fe3_diss_red"]
-    limiters["Fe3_diss_red_implicit"] = limiters["Fe3_diss_red"]
-    limiters["Fe3_diss_red_explicit"] = (np.maximum(c.Fe3, 0.0)) * limiters["Fe3_diss_red"]
-    limiters["Fe3_diss_red_inhibit"] = (K_Fe3_diss_red) * limiters["Fe3_diss_red"]
-    limiters["Fe3_diss_red_inhib"] = limiters["Fe3_diss_red_inhibit"]
-    limiters["Fe3_explicit_diss_red"] = limiters["Fe3_diss_red_explicit"]
-    limiters["Fe3_inhibit_diss_red"] = limiters["Fe3_diss_red_inhibit"]
-    limiters["Fe3_inhib_diss_red"] = limiters["Fe3_diss_red_inhibit"]
-    limiters["SO4_alpha_explicit"] = c.SO4 / (c.SO4 + 1e-3)
-    limiters["SO4_alpha_explicit_implicit"] = limiters["SO4_alpha_explicit"]
-    limiters["SO4_implicit_alpha_explicit"] = limiters["SO4_alpha_explicit"]
-    limiters["SO4_alpha_explicit_implicit"] = limiters["SO4_alpha_explicit"]
-    limiters["TS2_alpha_explicit"] = c.TS2 / (c.TS2 + 1e-3)
-    limiters["TS2_alpha_explicit_implicit"] = limiters["TS2_alpha_explicit"]
-    limiters["TS2_implicit_alpha_explicit"] = limiters["TS2_alpha_explicit"]
-    limiters["TS2_alpha_explicit_implicit"] = limiters["TS2_alpha_explicit"]
+    _l_O2 = 1.0 / (c.O2 + K_O2)
+    limiters["O2_implicit"] = _l_O2
+    limiters["O2_inhibit"] = (K_O2) * _l_O2
+    _l_O2_TS2 = 1.0 / (c.O2 + mp.K_O2_TS2)
+    limiters["O2_implicit_TS2"] = _l_O2_TS2
+    _l_SO4 = 1.0 / (c.SO4 + K_SO4)
+    limiters["SO4_implicit"] = _l_SO4
+    _l_Fe3 = 1.0 / (np.maximum(c.Fe3, 0.0) + K_Fe3)
+    limiters["Fe3_implicit"] = _l_Fe3
+    _l_Fe3_diss_red = 1.0 / (np.maximum(c.Fe3, 0.0) + K_Fe3_diss_red)
+    limiters["Fe3_diss_red_implicit"] = _l_Fe3_diss_red
+    limiters["Fe3_diss_red_implicit"] = _l_Fe3_diss_red
+    limiters["Fe3_diss_red_inhib"] = (K_Fe3_diss_red) * _l_Fe3_diss_red
+    _l_SO4_alpha_explicit = c.SO4 / (c.SO4 + 1e-3)
+    limiters["SO4_alpha_explicit"] = _l_SO4_alpha_explicit
+    _l_TS2_alpha_explicit = c.TS2 / (c.TS2 + 1e-3)
+    limiters["TS2_alpha_explicit"] = _l_TS2_alpha_explicit
     return limiters
 
 # -----------------------------------------------------------------------------
@@ -850,3 +820,7 @@ def compute_chemical_jacobian(c, mp, k, species_names):
     return J
 
 diagenetic_reactions.compute_chemical_jacobian = compute_chemical_jacobian
+
+reaction_parameters = {'msr_alpha': 1.07, 'TS2_O2_alpha': 0.995, 'S0_O2_alpha': 1.0, 'dispro_hs_alpha': 0.993, 'dispro_SO4_hs_split': 3.0, 'h2s_hs_alpha': 0.99991542, 'POC_O2_ratio': 1.27, 'K_epsilon_msr': 0.2, 'K_epsilon_TS2_O2': 0.01}
+
+fractionation_factors = reaction_parameters
