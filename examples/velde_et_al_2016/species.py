@@ -40,7 +40,7 @@ isotope_standards: dict = {
         "standard": "VCDT",
         "ratio": 0.044162589,  # 34S / 32S
         "symbol": "d34S",
-        "unit": "permil",
+        "unit": "mUr",
     },
 }
 
@@ -73,6 +73,8 @@ species = {
         "diffusion": {"m0": 4.88, "m1": 0.232},
         "bc": {"top": 28.2, "type": "dissolved", "delta": 21.0},
         "isotope": "SO4_32",
+        "isotope_standard": "S",
+        "delta_name": "d34S_SO4",
     },
     "SO4_32": {
         "phase": "liquid",
@@ -89,6 +91,8 @@ species = {
         "diffusion": {"m0": 43.3, "m1": 0.85},
         "bc": {"top": 0.0, "type": "dissolved", "delta": 0.0},
         "isotope": "TS2_32",
+        "isotope_standard": "S",
+        "delta_name": "d34S_TS2",
     },
     "TS2_32": {
         "phase": "liquid",
@@ -197,6 +201,8 @@ species = {
         "diffusion": None,
         "bc": {"top": 0.0, "type": "particulate"},
         "isotope": "FeS_32",
+        "isotope_standard": "S",
+        "delta_name": "d34S_FeS",
     },
     "FeS_32": {
         "phase": "solid",
@@ -214,6 +220,7 @@ species = {
         "isotope": "FeS2_32",
         "stoichiometry": 2.0,
         "isotope_standard": "S",
+        "delta_name": "d34S_FeS2",
     },
     "FeS2_32": {
         "phase": "solid",
@@ -229,6 +236,8 @@ species = {
         "diffusion": None,
         "bc": {"top": 0.0, "type": "particulate", "delta": 8.0},
         "isotope": "S0_32",
+        "isotope_standard": "S",
+        "delta_name": "d34S_S0",
     },
     "S0_32": {
         "phase": "solid",

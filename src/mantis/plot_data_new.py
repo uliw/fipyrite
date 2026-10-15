@@ -1154,64 +1154,59 @@ def _apply_matplotlib_options(ax, options):
 
 
 def _get_default_plot_description(df):
-    """Generate default plot description for backward compatibility.
+    """Generate generic plot description dynamically from DataFrame columns.
 
-    This function creates a plot_description dictionary that replicates
-    the original hard-coded plot structure from the legacy implementation.
-
-    Args
-    ----
-    df: DataFrame containing the data to plot
-
-    Returns
-    -------
-    dict: A plot_description dictionary with the default plot structure:
-        - First subplot: Concentrations (SO4, H2S, FeS2, O2, OM, Fe)
-        - Second subplot (if isotopes=True): Isotope deltas (dSO4, dH2S, dFeS2)
-        - Last subplot: Reaction rates (f_o2, f_SO4, f_FeS2, f_h2s, f_poc)
+    Inspects available species concentrations (c_*) and reaction rates (f_*).
     """
-    plot_desc = {
-        "first": {
-            "xaxis": [df.z, "Depth [m]"],
-            "left": [
-                [df.c_SO4, r"SO$_{4}$", {"color": "C0"}],
-                [
-                    df.c_h2s,
-                    r"H$_{2}$S",
-                    {
-                        "color": "C0",
-                        "linestyle": (0, (0.1, 2)),
-                        "dash_capstyle": "round",
-                    },
-                ],
-            ],
-            "left_ylabel": r"SO$_{4}$ & H$_{2}$S  [mmol/l]",
-            "right": [[df.c_FeS2, r"FeS$_{2}$", {"color": "k"}]],
-            "right_ylabel": r"FeS$_{2}$ [mmol/l]",
-            "right2": [[df.c_o2, r"O$_{2}$", {"color": "C2"}]],
-            "right2_ylabel": r"O$_{2}$ [$\mu$mol/l]",
-            "right3": [[df.c_poc, "OM [mol/l]", {"color": "C1"}]],
-            "right3_ylabel": "OM [mol/l]",
-            "right4": [[df.c_Fe3, "Fe [mol/l]", {"color": "C3"}]],
-            "right4_ylabel": "Fe [mol/l]",
-        },
-    }
+    if "z" not in df.columns:
+        raise ValueError("DataFrame missing 'z' column for plot x-axis.")
 
-    # Reaction rates plot
-    subplot_key = "second"
-    plot_desc[subplot_key] = {
-        "xaxis": [df.z, "Depth [m]"],
-        "left": [
-            [df.f_o2, "f_o2", {"color": "C2"}],
-            [df.f_SO4, "f_SO4", {"color": "C0"}],
-            [df.f_FeS2, "f_FeS2", {"color": "k"}],
-            [df.f_h2s, "f_h2s", {"color": "C0", "linestyle": ":"}],
-            [df.f_poc, "f_poc", {"color": "C1"}],
-        ],
-        "left_ylabel": r"f [mol/m$^{3}$ s$^{-1}$]",
-        "yscale": "log",
-        "legend": True,
-    }
+    # Find concentration columns
+    c_cols = [c for c in df.columns if c.startswith("c_")]
+    f_cols = [c for c in df.columns if c.startswith("f_")]
+    d_cols = [c for c in df.columns if c.startswith("d_") or c.startswith("d34") or c.startswith("d13")]
+
+    plot_desc = {}
+
+    if c_cols:
+        left_plots = []
+        for i, col in enumerate(c_cols[:8]):
+            sp_name = col[2:]
+            left_plots.append([df[col], sp_name, {"color": f"C{i % 10}"}])
+        plot_desc["concentrations"] = {
+            "xaxis": [df.z, "Depth [m]"],
+            "left": left_plots,
+            "left_ylabel": "Concentration [mmol/l]",
+            "yscale": "linear",
+            "legend": True,
+        }
+
+    if d_cols:
+        delta_plots = []
+        for i, col in enumerate(d_cols[:8]):
+            d_name = col
+            delta_plots.append([df[col], d_name, {"color": f"C{(i+2) % 10}"}])
+        plot_desc["isotopes"] = {
+            "xaxis": [df.z, "Depth [m]"],
+            "left": delta_plots,
+            "left_ylabel": r"$\delta$ [‰]",
+            "legend": True,
+        }
+
+    if f_cols:
+        rate_plots = []
+        for i, col in enumerate(f_cols[:8]):
+            r_name = col[2:]
+            rate_plots.append([df[col], r_name, {"color": f"C{i % 10}"}])
+        plot_desc["rates"] = {
+            "xaxis": [df.z, "Depth [m]"],
+            "left": rate_plots,
+            "left_ylabel": r"Rate [mol m$^{-3}$ s$^{-1}$]",
+            "legend": True,
+        }
+
+    if not plot_desc:
+        raise ValueError("No concentration ('c_*') or rate ('f_*') columns found in DataFrame to plot.")
 
     return plot_desc
 

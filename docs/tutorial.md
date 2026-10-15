@@ -39,6 +39,24 @@ In a sediment column, species exist in different physical compartments:
 Here is how common species are declared inside the `species` dictionary in `species.py`:
 
 ```python
+# -----------------------------------------------------------------------------
+# Isotope Reference Standards (milli Urey, mUr)
+# -----------------------------------------------------------------------------
+isotope_standards: dict = {
+    "S": {
+        "standard": "VCDT",
+        "ratio": 0.044162589,  # 34S / 32S
+        "symbol": "d34S",
+        "unit": "mUr",
+    },
+    "C": {
+        "standard": "VPDB",
+        "ratio": 0.0112372,    # 13C / 12C
+        "symbol": "d13C",
+        "unit": "mUr",
+    },
+}
+
 species = {
     # -------------------------------------------------------------------------
     # Dissolved Porewater Solutes
@@ -49,8 +67,10 @@ species = {
         "formula": "SO4",
         "diff_coeff_function": "diff_coeff",
         "diffusion": {"m0": 4.88, "m1": 0.232},  # Boudreau (1996) diffusion parameters
-        "bc": {"top": 28.2, "type": "dissolved", "delta": 21.0}, # 28.2 mmol/L seawater sulfate, d34S = +21 permil
+        "bc": {"top": 28.2, "type": "dissolved", "delta": 21.0}, # 28.2 mmol/L seawater sulfate, d34S = +21 mUr
         "isotope": "SO4_32",           # Companion light-sulfur isotope species
+        "isotope_standard": "S",       # Reference standard key in isotope_standards
+        "delta_name": "d34S_SO4",      # Explicit output column name in CSV / df
     },
 
     "SO4_32": {
@@ -80,6 +100,17 @@ species = {
         "diffusion": None,
         "bc": {"top": 0.0, "type": "particulate"},   # Formed authigenically in sediment
         "isotope": "FeS2_32",
+        "stoichiometry": 2.0,          # 2 moles of S per mole of FeS2
+        "isotope_standard": "S",
+        "delta_name": "d34S_FeS2",
+    },
+
+    "FeS2_32": {
+        "phase": "solid",
+        "include": True,
+        "formula": "FeS2",
+        "diffusion": None,
+        "isotope_of": "FeS2",
     },
 
     # -------------------------------------------------------------------------
@@ -183,7 +214,7 @@ When the simulation completes or exports data (`<model_name>.csv`):
   - Solutes (e.g., `c_SO4`, `c_O2`, `c_TS2`) are in **$\text{mmol / L of porewater}$**.
   - Solids (e.g., `c_FeS`, `c_Fe3`, `c_POC_slow`) are in **$\text{mmol / L of pure solid}$**.
 - `f_<species>`: Net production/consumption reaction rates in **$\text{mol} / (\text{m}^3 \cdot \text{s})$**.
-- `d_<species>`: Isotope delta values (e.g., `d_SO4`, `d_FeS`) in **$\permil$** (per mil relative to VCDT).
+- `d_<species>` and `d34S_<species>`: Isotope delta values (e.g., `d_SO4`, `d34S_SO4`, `d34S_FeS2`) in **$\text{milli Urey}$** ($\text{mUr}$, relative to reference standards such as VCDT or VPDB).
 - `z`: Depth below sediment-water interface in **meters** ($\text{m}$).
 - `phi` and `w`: Porosity (fraction, dimensionless) and burial velocity ($\text{m/s}$).
 
@@ -457,7 +488,7 @@ if __name__ == "__main__":
     result.save_state()
 
     if result.mp.isotopes:
-        print(f"Buried Delta34S = {get_total_delta(result.c, result.mp):.2f} permil")
+        print(f"Buried Delta34S = {get_total_delta(result.c, result.mp):.2f} mUr")
 
     # Render final publication plot
     result.plot_summary()
@@ -609,7 +640,7 @@ Step 2129, time=2.0 ka (100%), dt=52.18 week, iters=1
 Final Report: Maximum steps or end time reached in 2129 steps. Total Wall Time: 26.2s
 State saved to run_velde_model_state.npz
 Saved final PDF plot: run_velde_model.pdf
-d34S = -23.59 permil
+d34S = -23.59 mUr
 ```
 
 
@@ -719,6 +750,6 @@ You now have a complete overview of MANTIS's modular modeling system:
 2.  **Kinetics** are set in `kinetic_constants_*.py` with half-saturation and rate values.
 3.  **Reactions** are written in `fes_reactions.py` with natural chemistry and Monod/inhibition controls.
 4.  **Environmental Settings** (depth, burial, time, bioturbation) are configured in your driver script.
-5.  **Visuals** are customized in `plot_layout.py` in geochemist-friendly units ($\text{wt}\%$, $\text{\permil}$).
+5.  **Visuals** are customized in `plot_layout.py` in geochemist-friendly units ($\text{wt}\%$, $\text{mUr}$).
 
 Happy modeling!
