@@ -719,11 +719,16 @@ class DiageneticModel:
             self.mp.BI_depth = 0.0
         if not hasattr(self.mp, "isotopes"):
             self.mp.isotopes = True
-        if not hasattr(self.mp, "VCDT"):
-            self.mp.VCDT = 0.044162589
 
-        # 1. Parse species definitions
+        # 1. Parse species definitions & isotope standards
         species_defs = self._load_species_definitions()
+        self.mp.species_defs = species_defs
+
+        iso_stds = getattr(self._species_mod, "isotope_standards", {})
+        self.mp.isotope_standards = iso_stds
+        # Backwards compatibility: if S in isotope_standards, expose VCDT
+        if "S" in iso_stds and isinstance(iso_stds["S"], dict):
+            self.mp.VCDT = float(iso_stds["S"].get("ratio", 0.044162589))
 
         # 2. Extract pH from species definitions (e.g. Hplus or any species defining 'pH' under 'bc')
         if "pH" not in self.p_dict:
@@ -732,6 +737,15 @@ class DiageneticModel:
                 if isinstance(s_bc, dict) and "pH" in s_bc:
                     self.mp.pH = float(s_bc["pH"])
                     break
+
+        if not hasattr(self.mp, "pH"):
+            print(
+                "\n[MANTIS ERROR] pH is not defined in the model.\n"
+                "Please specify pH in species.py (e.g. Hplus: {'bc': {'pH': 7.5}}) "
+                "or pass model.configure(pH=7.5).\n",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
         # 3. Compile or load reaction equations
         prep_dict = dict(self.mp)
@@ -850,17 +864,6 @@ class DiageneticModel:
                 setattr(self.mp, f"{sp_name.lower()}_frac", f_val)
                 eval_ctx[f"{sp_name.lower()}_frac"] = f_val
 
-        # Ensure fallback defaults if not specified in species_defs
-        if not hasattr(self.mp, "Fe2_diss"):
-            self.mp.Fe2_diss = 1.0 / (1.0 + k.Fe2_p_eq) if hasattr(k, "Fe2_p_eq") else 1.0
-        if not hasattr(self.mp, "Fe2_sorb"):
-            self.mp.Fe2_sorb = (k.Fe2_p_eq * self.mp.fac_s * self.mp.Fe2_diss) if hasattr(k, "Fe2_p_eq") else 0.0
-        if not hasattr(self.mp, "hs_frac"):
-            Ka1 = 10.0 ** (-7.0)
-            self.mp.hs_frac = Ka1 / (Hplus + Ka1)
-        if not hasattr(self.mp, "h2s_frac"):
-            Ka1 = 10.0 ** (-7.0)
-            self.mp.h2s_frac = Hplus / (Hplus + Ka1)
 
         # Initialize CellVariables
         zeros = np.zeros(self.mp.grid_points)
@@ -992,10 +995,26 @@ class DiageneticModel:
                 iso_phase = iso_meta.get("phase", meta.get("phase", "liquid"))
                 iso_bc_type = "particulate" if iso_phase == "solid" else "dissolved"
 
+                # Standard ratio resolution
+                std_key = meta.get("isotope_standard", "S")
+                if std_key in self.mp.isotope_standards and isinstance(self.mp.isotope_standards[std_key], dict):
+                    std_ratio = float(self.mp.isotope_standards[std_key].get("ratio", 0.044162589))
+                elif hasattr(self.mp, "VCDT"):
+                    std_ratio = float(self.mp.VCDT)
+                else:
+                    print(
+                        f"\n[MANTIS ERROR] Species '{sp_name}' defines isotope companion '{iso_target}', "
+                        f"but standard '{std_key}' is not defined in isotope_standards in species.py.\n",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+
+                stoich = float(meta.get("stoichiometry", 1.0))
+
                 if sp_name in bc_map and bc_map[sp_name]["top"] > 0.0:
-                    top_mass_32 = get_l_mass(bc_map[sp_name]["top"], delta_val, self.mp.VCDT)
-                    setattr(self.mp, f"bc_{iso_target}", top_mass_32)
-                    bc_map[iso_target] = {"top": top_mass_32, "type": iso_bc_type}
+                    top_mass_comp = get_l_mass(bc_map[sp_name]["top"] * stoich, delta_val, std_ratio)
+                    setattr(self.mp, f"bc_{iso_target}", top_mass_comp)
+                    bc_map[iso_target] = {"top": top_mass_comp, "type": iso_bc_type}
                 else:
                     setattr(self.mp, f"bc_{iso_target}", 0.0)
                     bc_map[iso_target] = {"top": 0.0, "type": iso_bc_type}
