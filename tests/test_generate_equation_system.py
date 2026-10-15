@@ -1,18 +1,18 @@
 """Unit tests for generate_equation_system.py (Hoop 1)."""
 
 from pathlib import Path
+
 import pytest
+
 from mantis.generate_equation_system import (
     ReactionSystemValidator,
     build_arg_parser,
-    load_reactions_from_file,
-    main,
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-EXP_DIR = BASE_DIR / "nbk" / "experiments"
+EXP_DIR = BASE_DIR / "examples" / "velde_et_al_2016"
 SPECIES_FILE = EXP_DIR / "species.py"
-CONSTANTS_FILE = EXP_DIR / "kinetic_constants_slow.py"
+CONSTANTS_FILE = EXP_DIR / "kinetic_constants_fast.py"
 LIMITERS_FILE = EXP_DIR / "fes_reactions.py"
 
 
@@ -212,6 +212,7 @@ def test_selective_reaction_inclusion(tmp_path):
 def test_resolve_and_prepare_equations_timestamp_check(tmp_path, monkeypatch):
     """Verify resolve_and_prepare_equations regenerates on missing equations or outdated mtime."""
     import time
+
     from mantis.generate_equation_system import resolve_and_prepare_equations
 
     # Create dummy reaction and support files in tmp_path

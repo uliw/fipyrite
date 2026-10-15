@@ -4,11 +4,13 @@ Unit and regression tests for DiageneticModel interface in mantis.model.
 """
 
 from pathlib import Path
+
 import pytest
+
 from mantis import DiageneticModel
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-EXP_DIR = BASE_DIR / "nbk" / "experiments"
+EXP_DIR = BASE_DIR / "examples" / "velde_et_al_2016"
 
 
 def test_diagenetic_model_experiment_name_derivation():
@@ -16,7 +18,7 @@ def test_diagenetic_model_experiment_name_derivation():
         base_dir=EXP_DIR,
         species="species.py",
         reactions="fes_reactions.py",
-        constants="kinetic_constants_slow.py",
+        constants="kinetic_constants_fast.py",
     )
     # Since caller frame is test_diagenetic_model.py, stem should be test_diagenetic_model
     assert model.experiment == "test_diagenetic_model"
@@ -27,7 +29,7 @@ def test_diagenetic_model_cli_empty_arg_query(capsys):
         base_dir=EXP_DIR,
         species="species.py",
         reactions="fes_reactions.py",
-        constants="kinetic_constants_slow.py",
+        constants="kinetic_constants_fast.py",
         experiment="test_exp",
     )
     with pytest.raises(SystemExit) as exc_info:
@@ -44,7 +46,7 @@ def test_diagenetic_model_setup(tmp_path):
         base_dir=EXP_DIR,
         species="species.py",
         reactions="fes_reactions.py",
-        constants="kinetic_constants_slow.py",
+        constants="kinetic_constants_fast.py",
         equations=eq_file,
         layout="plot_layout.py",
         experiment="test_setup_exp",
@@ -83,7 +85,7 @@ def test_diagenetic_model_missing_species_file_exits(tmp_path, capsys):
         base_dir=tmp_path,
         species="nonexistent_species.py",
         reactions=EXP_DIR / "fes_reactions.py",
-        constants=EXP_DIR / "kinetic_constants_slow.py",
+        constants=EXP_DIR / "kinetic_constants_fast.py",
     )
     with pytest.raises(SystemExit) as exc_info:
         model.setup()
@@ -100,7 +102,7 @@ def test_diagenetic_model_missing_reactions_file_exits(tmp_path, capsys):
         base_dir=tmp_path,
         species=EXP_DIR / "species.py",
         reactions="nonexistent_reactions.py",
-        constants=EXP_DIR / "kinetic_constants_slow.py",
+        constants=EXP_DIR / "kinetic_constants_fast.py",
     )
     with pytest.raises(SystemExit) as exc_info:
         model.setup()
@@ -130,17 +132,17 @@ def test_diagenetic_model_finds_files_in_cwd(tmp_path, monkeypatch):
     import shutil
     shutil.copy(EXP_DIR / "species.py", tmp_path / "species.py")
     shutil.copy(EXP_DIR / "fes_reactions.py", tmp_path / "fes_reactions.py")
-    shutil.copy(EXP_DIR / "kinetic_constants_slow.py", tmp_path / "kinetic_constants_slow.py")
+    shutil.copy(EXP_DIR / "kinetic_constants_fast.py", tmp_path / "kinetic_constants_fast.py")
 
     monkeypatch.chdir(tmp_path)
     model = DiageneticModel(
         species="species.py",
         reactions="fes_reactions.py",
-        constants="kinetic_constants_slow.py",
+        constants="kinetic_constants_fast.py",
     )
     assert model.species_file == (tmp_path / "species.py").resolve()
     assert model.reactions_file == (tmp_path / "fes_reactions.py").resolve()
-    assert model.constants_file == (tmp_path / "kinetic_constants_slow.py").resolve()
+    assert model.constants_file == (tmp_path / "kinetic_constants_fast.py").resolve()
 
 
 def test_diagenetic_model_finds_files_in_model_directory(tmp_path):
@@ -150,23 +152,23 @@ def test_diagenetic_model_finds_files_in_model_directory(tmp_path):
     model_dir.mkdir()
     shutil.copy(EXP_DIR / "species.py", model_dir / "species.py")
     shutil.copy(EXP_DIR / "fes_reactions.py", model_dir / "fes_reactions.py")
-    shutil.copy(EXP_DIR / "kinetic_constants_slow.py", model_dir / "kinetic_constants_slow.py")
+    shutil.copy(EXP_DIR / "kinetic_constants_fast.py", model_dir / "kinetic_constants_fast.py")
 
     model = DiageneticModel(
         base_dir=model_dir,
         species="species.py",
         reactions="fes_reactions.py",
-        constants="kinetic_constants_slow.py",
+        constants="kinetic_constants_fast.py",
     )
     assert model.species_file == (model_dir / "species.py").resolve()
     assert model.reactions_file == (model_dir / "fes_reactions.py").resolve()
-    assert model.constants_file == (model_dir / "kinetic_constants_slow.py").resolve()
+    assert model.constants_file == (model_dir / "kinetic_constants_fast.py").resolve()
 
 
 def test_plot_summary_missing_layout_message(tmp_path, capsys):
     """Verify that plot_summary displays a suitable message when layout file is not found."""
-    from mantis.model import DiageneticModelResult
     from mantis.diff_lib import data_container
+    from mantis.model import DiageneticModelResult
     mp = data_container()
     mp.plot_name = "test_run"
     mp.max_depth = 1.0
@@ -196,7 +198,7 @@ def test_diagenetic_model_generic_configure():
         base_dir=EXP_DIR,
         species="species.py",
         reactions="fes_reactions.py",
-        constants="kinetic_constants_slow.py",
+        constants="kinetic_constants_fast.py",
         experiment="test_generic_cfg",
     )
     model.configure(
@@ -232,17 +234,18 @@ def test_diagenetic_model_generic_configure():
 def test_resolve_and_prepare_equations_triggers_regen(tmp_path):
     """Verify resolve_and_prepare_equations regenerates equations when species, reactions, constants, or force_regen is updated."""
     import time
+
     from mantis.generate_equation_system import resolve_and_prepare_equations
 
     sp_file = tmp_path / "species.py"
     rxn_file = tmp_path / "test_reactions.py"
-    kc_file = tmp_path / "kinetic_constants_slow.py"
+    kc_file = tmp_path / "kinetic_constants_fast.py"
     eq_file = tmp_path / "test_equations.py"
 
     import shutil
     shutil.copy(EXP_DIR / "species.py", sp_file)
     shutil.copy(EXP_DIR / "fes_reactions.py", rxn_file)
-    shutil.copy(EXP_DIR / "kinetic_constants_slow.py", kc_file)
+    shutil.copy(EXP_DIR / "kinetic_constants_fast.py", kc_file)
 
     p_dict = {
         "experiment": "test",

@@ -1,16 +1,19 @@
 import os
+import shutil
 import tempfile
-import time
+
 import numpy as np
 import pytest
 
+from mantis.live_plot_lib import BoundedVideoQueue, LivePlotter
 from mantis.parallel_video import (
-    detect_ffmpeg_encoder,
-    get_default_video_workers,
     IndexedVideoQueue,
     ParallelVideoManager,
+    detect_ffmpeg_encoder,
+    get_default_video_workers,
 )
-from mantis.live_plot_lib import BoundedVideoQueue, LivePlotter
+
+has_ffmpeg = shutil.which("ffmpeg") is not None
 
 
 def test_detect_ffmpeg_encoder():
@@ -55,6 +58,7 @@ def test_indexed_video_queue():
     bq.close()
 
 
+@pytest.mark.skipif(not has_ffmpeg, reason="ffmpeg is not installed on this system")
 def test_parallel_video_manager_end_to_end():
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create a minimal layout file
@@ -106,6 +110,7 @@ def get_layout(df):
         assert os.path.getsize(video_file) > 1000
 
 
+@pytest.mark.skipif(not has_ffmpeg, reason="ffmpeg is not installed on this system")
 def test_live_plotter_parallel_video_and_pdf():
     with tempfile.TemporaryDirectory() as tmpdir:
         layout_code = """
