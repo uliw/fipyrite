@@ -49,7 +49,7 @@ species = {
         "formula": "SO4",
         "diff_coeff_function": "diff_coeff",
         "diffusion": {"m0": 4.88, "m1": 0.232},  # Boudreau (1996) diffusion parameters
-        "bc": {"top": 28.2, "type": "dissolved"}, # 28.2 mmol/L seawater concentration at SWI
+        "bc": {"top": 28.2, "type": "dissolved", "delta": 21.0}, # 28.2 mmol/L seawater sulfate, d34S = +21 permil
         "isotope": "SO4_32",           # Companion light-sulfur isotope species
     },
 
@@ -59,7 +59,6 @@ species = {
         "formula": "SO4_32",
         "diff_coeff_function": "diff_coeff",
         "diffusion": "SO4",            # Inherits the molecular diffusion of parent SO4
-        "bc": {"top": 27.007, "type": "dissolved"},
         "isotope_of": "SO4",
     },
 
@@ -251,12 +250,13 @@ def get_reaction_constants(pH, phi):
     velde["FeS_sp"] = 0.3162       # FeS apparent solubility product
 
     # 3. Microorganism half-saturation & inhibition thresholds (mmol/L)
+    # All half-saturation constants (K_*) belong here in the kinetic constants file:
     k_values = {
         "K_O2": 0.001,             # O2 limitation / inhibition threshold (1 uM)
-        "K_TS2": 0.05,             # Sulfide tolerance threshold
-        "K_SO4": 0.5,              # Sulfate limitation threshold (0.5 mM)
-        "K_Fe3_diss_red": 50.0,    # Reactive iron limitation threshold (solid phase)
-        "K_O2_TS2": 1e-4,          # O2 threshold for sulfide oxidation
+        "K_O2_TS2": 0.001,         # O2 threshold for sulfide oxidation
+        "K_SO4": 0.9,              # Sulfate limitation threshold (0.9 mM)
+        "K_Fe3": 1e-3,             # Solid reactive iron threshold
+        "K_Fe3_diss_red": 10.4,    # Dissimilatory iron reduction threshold
     }
 
     return velde, k_values
@@ -266,10 +266,11 @@ def get_reaction_constants(pH, phi):
 
 ## Step 3: Defining Reactions & Limiters (`fes_reactions.py`)
 
-The reactions file is where you express your geochemical hypotheses. It contains two main sections:
+The reactions file is where you express your geochemical hypotheses. It contains three main sections:
 
 1.  `limiters`: Kinetic switches and fractionating terms.
 2.  `reactions`: The list of stoichiometric equations and their regulatory controls.
+3.  `reaction_parameters` (or `fractionation_factors`): Isotope fractionation factors ($\alpha$), stoichiometric ratios, and limiter transition constants.
 
 
 
@@ -288,7 +289,6 @@ limiters = {
     # MANTIS automatically generates the limiter [C / (C + K)] and inhibitor [K / (C + K)]!
     "O2": "1.0 / (c.O2 + K_O2)",
     "O2_TS2": "1.0 / (c.O2 + mp.K_O2_TS2)",
-    "TS2": "1.0 / (c.TS2 + K_TS2)",
     "SO4": "1.0 / (c.SO4 + K_SO4)",
     "Fe3_diss_red": "1.0 / (np.maximum(c.Fe3, 0.0) + K_Fe3_diss_red)",
 
@@ -371,6 +371,27 @@ reactions = [
         "isotope_species": {"TS2": "TS2_32", "FeS": "FeS_32", "HS": "HS_32"},
     },
 ]
+
+# -------------------------------------------------------------------------
+# Reaction Parameters & Isotope Fractionation Factors
+# -------------------------------------------------------------------------
+# Fractionation factors (alpha), stoichiometric ratios, and numerical limiter
+# transition factors belong here in the reactions file:
+reaction_parameters = {
+    # Isotope fractionation factors
+    "msr_alpha": 1.07,
+    "TS2_O2_alpha": 0.995,
+    "S0_O2_alpha": 1.0,
+    "dispro_hs_alpha": 0.993,
+    "dispro_SO4_hs_split": 3.0,
+    "h2s_hs_alpha": 0.99991542,
+    # Primary respiration stoichiometry
+    "POC_O2_ratio": 1.27,
+    # Transition factors for isotope fractionation limiters
+    "K_epsilon_msr": 0.2,
+    "K_epsilon_TS2_O2": 0.01,
+}
+fractionation_factors = reaction_parameters
 ```
 
 
@@ -611,12 +632,65 @@ You can query all options and their configured defaults at any time:
 python run_velde_model_fast.py --help
 ```
 
-Key flags include:
+### Interactive Category Queries
+You can also inspect specific sub-systems and their current runtime values by passing a category flag with no argument:
 
--   `--t-end "5000 year"`: Override the simulation duration.
--   `--video "5 year"`: Enable video rendering at the specified interval.
--   `--solver-tol 1e-3`: Adjust the Newton convergence tolerance.
--   `--numerical-jacobian`: Run with finite-difference Jacobians instead of analytical SymPy Jacobians.
+```sh
+python run_velde_model_fast.py --solver   # Displays all numerical solver parameters
+python run_velde_model_fast.py --video    # Displays all video recording options
+python run_velde_model_fast.py --run      # Displays time, grid, and domain settings
+```
+
+### Complete Options Table
+
+| Category | Flag | Argument | Default | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| **Solver** | `--solver` | `monolithic` \| `coupled` | `monolithic` | Backend solver architecture |
+| | `--solver-tol`, `--newton-tol` | `<float>` | `1e-3` | Newton-Raphson convergence residual tolerance |
+| | `--numerical-jacobian` | (flag) | `False` | Use finite differences instead of SymPy analytical Jacobian |
+| | `--max-newton-iters` | `<int>` | `8` | Maximum Newton iterations allowed per timestep |
+| | `--newton-norm` | `linf` \| `wrms` | `linf` | Residual norm formulation ($L_\infty$ or WRMS) |
+| | `--newton-target-optimal`| `<int>` | `4` | Target Newton iterations for timestep expansion |
+| | `--newton-max-acceptable`| `<int>` | `6` | Maximum iterations before timestep reduction |
+| | `--dt-tolerance` | `<float>` | `1e-5` | Adaptive timestep convergence tolerance |
+| | `--force-regen`, `--rebuild-equations` | (flag) | `False` | Force regeneration of equation system & analytical Jacobian |
+| **Video** | `--video` | `<interval>` | `None` | Live video recording frame interval (e.g. `'10 year'`, `'none'`) |
+| | `--video-dpi` | `<int>` | `120` | Resolution (DPI) of recorded video frames |
+| | `--video-queue-size` | `<int>` | `100` | Maximum video frame render queue size |
+| | `--video-resume-threshold` | `<int>` | `50` | Video frame resume queue threshold |
+| | `--video-workers` | `<int>` | auto | Dedicated background worker count for video rendering |
+| **Run & Domain** | `--t-end` | `<duration>` | `1 kyr` | Total duration of simulation (e.g. `'10 kyr'`) |
+| | `--dt-max` | `<timestep>` | `1 year` | Maximum adaptive timestep cap (e.g. `'1 year'`) |
+| | `--dt-init` | `<timestep>` | `1 day` | Initial startup timestep size (e.g. `'1 day'`) |
+| | `--dt-min` | `<timestep>` | `1 minute` | Minimum allowable timestep before aborting |
+| | `--max-depth` | `<length>` | `2.0 m` | Total depth of sediment model column (e.g. `'10 m'`) |
+| | `--display-length` | `<length>` | `2.0 m` | Plotted column depth for video and PDF summaries |
+
+
+## Automatic Equation & Jacobian Regeneration
+
+MANTIS automatically keeps your compiled equation system and analytical SymPy Jacobian synchronized with your geochemical input files.
+
+### Do We Need to Regenerate Equations or the Jacobian When Files Change?
+**Yes, absolutely.**
+- **`species.py`**: Controls the active chemical species vector $\mathbf{c}$, system size $N$, phase partitioning (dissolved vs. solid vs. mixed), and companion isotope pairs ($^{32}\text{S}$ / $^{34}\text{S}$). Adding, removing, or changing species phases alters the dimensions ($N \times N$) of the block tridiagonal Jacobian matrix.
+- **`limiters.py` (or `limiters` in `fes_reactions.py`)**: The analytical chemical Jacobian directly embeds the partial derivatives ($\frac{\partial L}{\partial C}$) of all Monod and inhibition terms. Any change in limiter mathematical forms or threshold formulas directly alters the Jacobian entries.
+- **`kinetic_constants_*.py`**: Contains rate constants and half-saturation parameters ($K_m$) used in rate equations and validation checks.
+- **`fes_reactions.py`**: Defines reaction stoichiometries, active pathways, and isotope fractionation mechanisms.
+- **`generate_equation_system.py`**: The code generator itself.
+
+### How MANTIS Handles It
+Whenever `model.setup()` or `model.run()` is called:
+1. MANTIS checks the file modification timestamps (`st_mtime`) of `fes_reactions.py`, `species.py`, `kinetic_constants_*.py`, `limiters.py`, and `generate_equation_system.py`.
+2. If any of these files is **newer** than `<experiment>_equations.py`, MANTIS automatically re-parses the chemical network, derives all symbolic derivatives via SymPy, writes out a freshly updated equations module, invalidates import caches, and loads the new system without requiring manual intervention.
+3. You can also force an immediate rebuild at any time using:
+   ```sh
+   python run_velde_model_fast.py --force-regen
+   ```
+   or in Python:
+   ```python
+   model.configure(force_regen=True)
+   ```
 
 
 ## Solver Mechanics & Physical Realism (Geochemist's Alert!)
