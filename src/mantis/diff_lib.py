@@ -701,28 +701,48 @@ def _save_data_to_disk(mp, c, k, species_list, z, D_mol, f_final):
         key = f"D_{d_name}" if d_name in species_list else d_name
         data[key] = get_v(d_val)
 
-    # 3. Calculate delta values for specific sulfur species
-    # We prioritize common names (SO4, h2s, FeS, S0, FeS2)
-    isotope_map = {
-        "SO4": "SO4_32",
-        "h2s": "h2s_32",
-        "hs": "hs_32",
-        "TS2": "TS2_32",
-        "FeS": "FeS_32",
-        "S0": "S0_32",
-        "FeS2": "FeS2_32",
-    }
-
+    # 3. Calculate delta values dynamically for all isotope companions
     phi_val = data.get("phi", getattr(mp, "phi", None))
+    species_defs = getattr(mp, "species_defs", None) or getattr(mp, "species", None)
+    iso_stds = getattr(mp, "isotope_standards", {})
 
-    for base, iso in isotope_map.items():
-        if f"c_{base}" in data and f"c_{iso}" in data:
-            s_total = data[f"c_{base}"]
-            if base == "FeS2":
-                s_total = 2.0 * s_total
-            s32 = data[f"c_{iso}"]
+    if isinstance(species_defs, dict):
+        for base, meta in species_defs.items():
+            iso = meta.get("isotope")
+            if not iso or f"c_{base}" not in data or f"c_{iso}" not in data:
+                continue
+
+            stoich = float(meta.get("stoichiometry", 1.0))
+            tot = data[f"c_{base}"] * stoich
+            c_iso = data[f"c_{iso}"]
+
+            std_key = meta.get("isotope_standard", "S")
+            if std_key in iso_stds and isinstance(iso_stds[std_key], dict):
+                std_ratio = float(iso_stds[std_key].get("ratio", 0.044162589))
+            elif hasattr(mp, "VCDT"):
+                std_ratio = float(mp.VCDT)
+            else:
+                std_ratio = 0.044162589
+
             thresh = get_species_delta_threshold(base, mp=mp, phi=phi_val)
-            data[f"d_{base}"] = get_delta(s_total, s32, mp.VCDT, threshold=thresh)
+            delta_val = get_delta(tot, c_iso, std_ratio, threshold=thresh)
+
+            # Record standard d_<base> column for backwards compatibility
+            data[f"d_{base}"] = delta_val
+            # Also record explicit delta_name if declared (e.g. d34S_FeS2)
+            if "delta_name" in meta:
+                data[meta["delta_name"]] = delta_val
+    else:
+        # Fallback if species_defs is not passed on mp
+        for base in species_list:
+            iso_candidates = [f"{base}_32", f"{base}_iso"]
+            for iso in iso_candidates:
+                if f"c_{base}" in data and f"c_{iso}" in data:
+                    tot = data[f"c_{base}"]
+                    c_iso = data[f"c_{iso}"]
+                    thresh = get_species_delta_threshold(base, mp=mp, phi=phi_val)
+                    r_std = getattr(mp, "VCDT", 0.044162589)
+                    data[f"d_{base}"] = get_delta(tot, c_iso, r_std, threshold=thresh)
 
     data["w"] = np.ones(len(z)) * mp.w
     data["phi"] = np.ones(len(z)) * mp.phi
