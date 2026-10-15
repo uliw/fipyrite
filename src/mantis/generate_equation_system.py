@@ -1934,17 +1934,32 @@ class EquationSystemGenerator:
             '        return _external_get_limiters(c, mp)',
             '    phi = np.asarray(mp.phi.value if hasattr(mp.phi, "value") else mp.phi)',
             '    solid_phi = 1.0 - phi',
-            '    # Dynamically extract half-saturation constants from mp (liquid scaled by phi, solid by solid_phi)',
-            '    # Liquid phase limiters:',
-            '    K_O2 = getattr(mp, "K_O2", 0.0) / phi',
-            '    K_O2_TS2 = getattr(mp, "K_O2_TS2", 0.0) / phi',
-            '    K_TS2 = getattr(mp, "K_TS2", 0.0) / phi',
-            '    K_SO4 = getattr(mp, "K_SO4", 0.0) / phi',
-            '    # Solid phase limiters:',
-            '    K_Fe3 = getattr(mp, "K_Fe3", 0.0) / solid_phi',
-            '    K_Fe3_diss_red = getattr(mp, "K_Fe3_diss_red", 0.0) / solid_phi',
             '    limiters = {}',
         ]
+
+        # Scan limiter expressions to identify all half-saturation constants (K_*, Km_*, Kin_*)
+        detected_k_constants = set()
+        for lim_name, expr in self.validator.limiters_defs.items():
+            for m in re.finditer(r'\b(K(?:m|in)?_[A-Za-z0-9_]+)\b', expr):
+                detected_k_constants.add(m.group(1))
+
+        # Dynamically determine phase scaling based on species phase from validator
+        species_defs = getattr(self.validator, "species_defs", {})
+        k_extract_lines = []
+        for k_name in sorted(detected_k_constants):
+            # Check if species matching the suffix is solid
+            is_solid = False
+            for sp_k, s_meta in species_defs.items():
+                if isinstance(s_meta, dict) and s_meta.get("phase") == "solid":
+                    if sp_k in k_name:
+                        is_solid = True
+                        break
+            denom = "solid_phi" if is_solid else "phi"
+            k_extract_lines.append(f'    {k_name} = getattr(mp, "{k_name}", 0.0) / {denom}')
+
+        if k_extract_lines:
+            header_code.append('    # Dynamically extract half-saturation constants (liquid scaled by phi, solid by 1-phi)')
+            header_code.extend(k_extract_lines)
 
         # Dynamically emit only limiters actually referenced in reactions or Jacobian
         for lim_name, expr in self.validator.limiters_defs.items():
